@@ -76,20 +76,32 @@ def evaluate_algorithms(scaled_df_input, k_range_eval):
     """
     Evaluates KMeans, GMM, Agglomerative Clustering for a range of k values.
     Returns scores for plotting.
+    Includes a progress bar for user feedback.
     """
     kmeans_scores = {'Silhouette': [], 'Davies-Bouldin': [], 'Calinski-Harabasz': []}
     gmm_scores = {'Silhouette': [], 'Davies-Bouldin': [], 'Calinski-Harabasz': []}
     agglo_scores = {'Silhouette': [], 'Davies-Bouldin': [], 'Calinski-Harabasz': []}
 
-    if scaled_df_input.empty:
-        return kmeans_scores, gmm_scores, agglo_scores # Return empty if no data
+    if scaled_df_input.empty or len(scaled_df_input) < 2:
+        st.warning("Not enough data points to perform clustering evaluation (need at least 2).")
+        return kmeans_scores, gmm_scores, agglo_scores
 
-    for k in k_range_eval:
+    total_steps = len(k_range_eval)
+    # --- START OF PROGRESS BAR ADDITION ---
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+    # --- END OF PROGRESS BAR ADDITION ---
+
+    for i, k in enumerate(k_range_eval):
+        # --- UPDATE PROGRESS BAR ---
+        current_progress = (i + 1) / total_steps
+        progress_bar.progress(current_progress)
+        progress_text.text(f"Evaluating K={k} ({i+1}/{total_steps}) for KMeans, GMM, Agglomerative...")
+        # --- END UPDATE ---
+
         if k >= len(scaled_df_input): # Avoid error if k is too large for dataset size
-            for score_dict in [kmeans_scores, gmm_scores, agglo_scores]:
-                for key in score_dict:
-                    score_dict[key].extend([np.nan] * (max(k_range_eval) - k + 1))
-            break
+            st.warning(f"Skipping k={k} and subsequent values as k is too large for the dataset size.")
+            break # Exit loop if k is too large
 
         # KMeans
         kmeans_model = KMeans(n_clusters=k, random_state=42, n_init=10)
@@ -111,6 +123,11 @@ def evaluate_algorithms(scaled_df_input, k_range_eval):
         agglo_scores['Silhouette'].append(silhouette_score(scaled_df_input, agglo_labels))
         agglo_scores['Davies-Bouldin'].append(davies_bouldin_score(scaled_df_input, agglo_labels))
         agglo_scores['Calinski-Harabasz'].append(calinski_harabasz_score(scaled_df_input, agglo_labels))
+
+    # --- CLEAR PROGRESS BAR AND TEXT AFTER COMPLETION ---
+    progress_text.empty() # Clear the text
+    progress_bar.empty() # Clear the bar once done
+    # --- END CLEAR ---
 
     return kmeans_scores, gmm_scores, agglo_scores
 
@@ -152,7 +169,7 @@ def generate_cluster_profiles(df_original_subset, cluster_labels, selected_numer
     cluster_means_numeric = pd.DataFrame()
     cluster_cat_proportions = {}
 
-    # Exclude -1 (noise) from profiling
+    # Exclude -1 (noise) from profiling if present
     clusters_to_profile = [c for c in df_clustered_profile['Cluster'].unique() if c != -1]
 
     if clusters_to_profile:
@@ -164,6 +181,9 @@ def generate_cluster_profiles(df_original_subset, cluster_labels, selected_numer
             if cat_col in df_clustered_profile.columns:
                 cat_proportions_df = pd.crosstab(df_clustered_profile['Cluster'], df_clustered_profile[cat_col], normalize='index')
                 cluster_cat_proportions[cat_col] = cat_proportions_df[cat_proportions_df.index.isin(clusters_to_profile)] # Filter out noise
+    else:
+        # Handle case where no valid clusters are found (e.g., all noise in DBSCAN)
+        st.warning("No valid clusters found for profiling (e.g., all points might be noise or less than 2 clusters).")
 
     return cluster_means_numeric, cluster_cat_proportions, df_clustered_profile
 
@@ -195,13 +215,18 @@ def get_cluster_description(cluster_id, cluster_mean_values, cat_proportions,
             cluster_cat_dist = cat_proportions[cat_col].loc[cluster_id]
             
             # Filter out columns that are not directly relevant to original categories (e.g., if any _NaN columns existed)
-            relevant_cat_cols = [c for c in cluster_cat_dist.index if c.startswith(cat_col + '_') or c == cat_col]
-            if not relevant_cat_cols: continue
+            # Ensure we only pick categories that actually exist in the processed data columns for that categorical feature
+            relevant_ohe_cols = [c for c in cluster_cat_dist.index if c.startswith(cat_col + '_') or c == cat_col]
+            if not relevant_ohe_cols: continue # Skip if no relevant OHE columns found
 
-            dominant_category_ohe = cluster_cat_dist[relevant_cat_cols].idxmax()
+            # Get the category with the highest proportion for this cluster
+            dominant_category_ohe = cluster_cat_dist[relevant_ohe_cols].idxmax()
             dominant_proportion = cluster_cat_dist[dominant_category_ohe] * 100
+            
+            # Extract the original category name (remove "columnname_" prefix)
             original_category_name = dominant_category_ohe.replace(f"{cat_col}_", "").replace("_", " ").lower()
-
+            
+            # Adjust wording based on proportion
             if dominant_proportion > 75:
                 description_parts.append(f'predominantly **{original_category_name}**')
             elif dominant_proportion > 55:
@@ -210,12 +235,16 @@ def get_cluster_description(cluster_id, cluster_mean_values, cat_proportions,
                 description_parts.append(f'a significant presence of **{original_category_name}**')
 
             # Special handling for gender if both categories are substantial
-            if cat_col.lower() == 'gender' and len(relevant_cat_cols) > 1:
-                other_gender_ohe = [c for c in relevant_cat_cols if c != dominant_category_ohe][0]
-                other_proportion = cluster_cat_dist[other_gender_ohe] * 100
-                other_original_name = other_gender_ohe.replace(f"{cat_col}_", "").replace("_", " ").lower()
-                if other_proportion > 25 and dominant_proportion < 75:
-                    description_parts.append(f'with a notable presence of **{other_original_name}**')
+            if cat_col.lower() == 'gender' and len(relevant_ohe_cols) > 1:
+                # Find the other gender category's OHE name
+                other_gender_ohe = [c for c in relevant_ohe_cols if c != dominant_category_ohe]
+                if other_gender_ohe: # If there is another gender category
+                    other_gender_ohe = other_gender_ohe[0] # Take the first one
+                    other_proportion = cluster_cat_dist[other_gender_ohe] * 100
+                    other_original_name = other_gender_ohe.replace(f"{cat_col}_", "").replace("_", " ").lower()
+                    if other_proportion > 25 and dominant_proportion < 75: # If other is substantial but not dominant
+                        description_parts.append(f'with a notable presence of **{other_original_name}**')
+
 
     return "This segment is characterized by " + ", ".join(description_parts) + "." if description_parts else "No specific characteristics identified based on available features."
 
@@ -250,6 +279,8 @@ def generate_comprehensive_report(report_settings, df_original_full, df_clustere
         overall_numeric_q75 = df_clustered_output[report_settings['selected_numeric_cols']].quantile(0.75)
 
         for cluster_id, cluster_mean_values in cluster_means_numeric.iterrows():
+            if cluster_id == -1: continue # Skip noise cluster in executive summary
+            
             cluster_percentage = (df_clustered_output['Cluster'] == cluster_id).sum() / len(df_clustered_output) * 100
             desc = get_cluster_description(cluster_id, cluster_mean_values, cluster_cat_proportions,
                                            overall_numeric_q25, overall_numeric_q75,
@@ -350,17 +381,20 @@ def generate_comprehensive_report(report_settings, df_original_full, df_clustere
         document.add_paragraph(f"A total of {len(cluster_counts)} distinct customer clusters were identified.")
 
     # Add distribution table
-    table = document.add_table(rows=1, cols=3)
-    table.style = 'Table Grid'
-    hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = 'Cluster ID'
-    hdr_cells[1].text = 'Number of Customers'
-    hdr_cells[2].text = 'Percentage (%)'
-    for cluster_id in cluster_counts.index:
-        row_cells = table.add_row().cells
-        row_cells[0].text = str(cluster_id)
-        row_cells[1].text = str(cluster_counts[cluster_id])
-        row_cells[2].text = str(cluster_percentages[cluster_id])
+    if not cluster_counts.empty:
+        table = document.add_table(rows=1, cols=3)
+        table.style = 'Table Grid'
+        hdr_cells = table.rows[0].cells
+        hdr_cells[0].text = 'Cluster ID'
+        hdr_cells[1].text = 'Number of Customers'
+        hdr_cells[2].text = 'Percentage (%)'
+        for cluster_id in cluster_counts.index:
+            row_cells = table.add_row().cells
+            row_cells[0].text = str(cluster_id)
+            row_cells[1].text = str(cluster_counts[cluster_id])
+            row_cells[2].text = str(cluster_percentages[cluster_id])
+    else:
+        document.add_paragraph("No cluster distribution data available to display.")
     document.add_paragraph('\n')
 
     document.add_heading('4.2 Cluster Characterization', level=2)
@@ -372,7 +406,7 @@ def generate_comprehensive_report(report_settings, df_original_full, df_clustere
 
     if not cluster_means_numeric.empty:
         for cluster_id, cluster_mean_values in cluster_means_numeric.iterrows():
-            if cluster_id == -1: continue # Skip noise cluster
+            if cluster_id == -1: continue # Skip noise cluster in characterization
 
             cluster_percentage = (df_clustered_output['Cluster'] == cluster_id).sum() / len(df_clustered_output) * 100
             desc = get_cluster_description(cluster_id, cluster_mean_values, cluster_cat_proportions,
@@ -454,7 +488,7 @@ def generate_comprehensive_report(report_settings, df_original_full, df_clustere
             f'are separated in a 2D space. Each point represents a customer, colored according to their assigned cluster.'
         )
         document.add_paragraph(
-            f'**Key Findings:** In this plot, we observe that the **{report_settings["n_clusters"]} clusters** identified by '
+            f'**Key Findings:** In this plot, we observe that the **{report_settings["n_clusters"] if report_settings["n_clusters"] else "varied"} clusters** identified by '
             f'{report_settings["chosen_algorithm"]} appear generally distinct, with some areas of overlap. '
             f'This visual separation supports the model\'s ability to group similar customers together.'
         )
@@ -562,10 +596,9 @@ if df is not None:
     numeric_cols_detected = [col for col in all_columns if pd.api.types.is_numeric_dtype(df[col])]
     categorical_cols_detected = [col for col in all_columns if pd.api.types.is_object_dtype(df[col])]
 
-    # Exclude common IDs and target variables by default
-    suggested_numeric_default = [col for col in numeric_cols_detected if 'id' not in col.lower() and 'num' not in col.lower() and 'flag' not in col.lower() and 'bayes' not in col.lower()]
-    suggested_categorical_default = [col for col in categorical_cols_detected if 'flag' not in col.lower() and 'id' not in col.lower()]
-
+    # Exclude common IDs and target variables by default (e.g., CLIENTNUM, Attrition_Flag, Naive_Bayes_Classifier...)
+    suggested_numeric_default = [col for col in numeric_cols_detected if not any(keyword in col.lower() for keyword in ['id', 'num', 'flag', 'bayes', 'classifier'])]
+    suggested_categorical_default = [col for col in categorical_cols_detected if not any(keyword in col.lower() for keyword in ['flag', 'id', 'bayes', 'classifier'])]
 
     selected_numeric_cols = st.multiselect(
         "Select Numeric Features for Clustering:",
@@ -611,8 +644,8 @@ if df is not None:
         if len(scaled_df) < 2:
             st.warning("Not enough data points to perform clustering evaluation (need at least 2).")
         else:
-            with st.spinner(f"Evaluating algorithms for k from {min(k_range_eval)} to {max(k_range_eval)}..."):
-                kmeans_scores, gmm_scores, agglo_scores = evaluate_algorithms(scaled_df, k_range_eval)
+            # Call the evaluation function (progress bar is now inside it)
+            kmeans_scores, gmm_scores, agglo_scores = evaluate_algorithms(scaled_df, k_range_eval)
 
             # Plotting the evaluation metrics
             fig_eval, axes_eval = plt.subplots(3, 1, figsize=(10, 15))
@@ -662,8 +695,10 @@ if df is not None:
         min_samples_dbscan = None
 
         if chosen_algorithm in ["KMeans", "Gaussian Mixture Model", "Agglomerative Clustering"]:
-            n_clusters = st.sidebar.slider("Number of Clusters (k):", min_value=2, max_value=min(10, len(scaled_df)-1), value=min(5, len(scaled_df)-1))
-            if n_clusters < 2 and len(scaled_df) >= 2:
+            # Ensure max value is capped to prevent errors on small datasets
+            max_k_slider = min(10, len(scaled_df) - 1) if len(scaled_df) > 1 else 2
+            n_clusters = st.sidebar.slider("Number of Clusters (k):", min_value=2, max_value=max_k_slider, value=min(5, max_k_slider))
+            if n_clusters < 2:
                 st.sidebar.warning("Number of clusters must be at least 2.")
                 st.stop()
             elif len(scaled_df) < 2:
@@ -677,7 +712,7 @@ if df is not None:
         # --- Run Clustering Button ---
         if st.button("Run Clustering & Generate Report"):
             if n_clusters is None and chosen_algorithm != "DBSCAN":
-                st.error("Please select a valid number of clusters.")
+                st.error("Please select a valid number of clusters for the chosen algorithm.")
             elif chosen_algorithm == "DBSCAN" and (eps_dbscan is None or min_samples_dbscan is None):
                 st.error("Please set DBSCAN parameters.")
             else:
@@ -688,146 +723,152 @@ if df is not None:
                     )
 
                 if cluster_labels is not None:
-                    st.success(f"Clustering complete! Identified {len(np.unique(cluster_labels)) if -1 not in np.unique(cluster_labels) else len(np.unique(cluster_labels)) -1} clusters.")
-                    if chosen_algorithm == "DBSCAN" and n_noise_points > 0:
-                        st.write(f"DBSCAN identified {n_noise_points} noise points (labeled -1).")
+                    num_found_clusters = len(np.unique(cluster_labels))
+                    if chosen_algorithm == "DBSCAN" and -1 in np.unique(cluster_labels):
+                        num_found_clusters -= 1 # Don't count noise as a cluster
+                    
+                    if num_found_clusters > 0:
+                        st.success(f"Clustering complete! Identified {num_found_clusters} clusters.")
+                        if chosen_algorithm == "DBSCAN" and n_noise_points > 0:
+                            st.write(f"DBSCAN identified {n_noise_points} noise points (labeled -1).")
 
-                    # Generate profiles
-                    cluster_means_numeric, cluster_cat_proportions, df_clustered_output = \
-                        generate_cluster_profiles(df_for_profiling, cluster_labels, selected_numeric_cols, selected_categorical_cols)
+                        # Generate profiles
+                        cluster_means_numeric, cluster_cat_proportions, df_clustered_output = \
+                            generate_cluster_profiles(df_for_profiling, cluster_labels, selected_numeric_cols, selected_categorical_cols)
 
-                    # --- Evaluation Metrics ---
-                    st.subheader("4.1 Evaluation Metrics")
-                    # Calculate metrics on the full clustered data (scaled_df)
-                    if len(np.unique(cluster_labels)) > 1: # Need at least 2 clusters for metrics
-                        final_silhouette = silhouette_score(scaled_df, cluster_labels)
-                        final_davies_bouldin = davies_bouldin_score(scaled_df, cluster_labels)
-                        final_calinski_harabasz = calinski_harabasz_score(scaled_df, cluster_labels)
-                        st.write(f"- **Silhouette Score**: {format_metric(final_silhouette)}")
-                        st.write(f"- **Davies-Bouldin Index**: {format_metric(final_davies_bouldin)}")
-                        st.write(f"- **Calinski-Harabasz Index**: {format_metric(final_calinski_harabasz)}")
-                    else:
-                        st.warning("Cannot compute standard metrics (less than 2 clusters or only noise found).")
-
-
-                    # --- Cluster Profiles ---
-                    st.subheader("4.2 Cluster Profiles")
-                    if not cluster_means_numeric.empty:
-                        st.write("#### Average Numeric Features per Cluster:")
-                        st.dataframe(cluster_means_numeric.round(2))
-
-                    if selected_categorical_cols:
-                        for cat_col in selected_categorical_cols:
-                            if cat_col in cluster_cat_proportions:
-                                st.write(f"#### Proportions for {cat_col} per Cluster:")
-                                st.dataframe((cluster_cat_proportions[cat_col]*100).round(1))
-
-                    # --- Visualizations ---
-                    st.subheader("4.3 Visualizations")
-
-                    # PCA Plot
-                    if scaled_df.shape[1] > 1 and len(np.unique(cluster_labels)) > 1: # PCA needs at least 2 features and 2 clusters
-                        pca = PCA(n_components=2, random_state=42)
-                        principal_components = pca.fit_transform(scaled_df)
-                        pca_df = pd.DataFrame(data=principal_components, columns=['PC1', 'PC2'], index=scaled_df.index)
-                        pca_df['Cluster'] = cluster_labels
-
-                        fig_pca, ax_pca = plt.subplots(figsize=(10, 7))
-                        sns.scatterplot(x='PC1', y='PC2', hue='Cluster', data=pca_df, palette='viridis', ax=ax_pca, legend='full', s=100, alpha=0.8)
-                        ax_pca.set_title(f'Customer Clusters (PCA-Reduced) - {chosen_algorithm} (k={n_clusters if n_clusters else "N/A"})')
-                        ax_pca.set_xlabel(f'Principal Component 1 ({pca.explained_variance_ratio_[0]*100:.2f}%)')
-                        ax_pca.set_ylabel(f'Principal Component 2 ({pca.explained_variance_ratio_[1]*100:.2f}%)')
-                        ax_pca.grid(True)
-                        st.pyplot(fig_pca)
-
-                        # Save PCA plot to bytes for report
-                        pca_plot_buffer = io.BytesIO()
-                        fig_pca.savefig(pca_plot_buffer, format='png', bbox_inches='tight')
-                        pca_plot_bytes = pca_plot_buffer.getvalue()
-                        plt.close(fig_pca) # Close figure to free memory
-                    else:
-                        st.info("PCA plot requires at least 2 features and more than 1 cluster.")
-                        pca_plot_bytes = None
-
-                    # Cluster Profile Bar Plots
-                    if not cluster_means_numeric.empty:
-                        num_numeric_features = len(selected_numeric_cols)
-                        if num_numeric_features > 0:
-                            fig_profile, axes_profile = plt.subplots(num_numeric_features, 1, figsize=(10, 4 * num_numeric_features))
-                            fig_profile.suptitle('Average Feature Values per Cluster (Original Scale)', y=1.02, fontsize=16)
-
-                            if num_numeric_features == 1:
-                                axes_profile = [axes_profile]
-
-                            for i, col in enumerate(selected_numeric_cols):
-                                sns.barplot(x=cluster_means_numeric.index, y=cluster_means_numeric[col], ax=axes_profile[i], palette='viridis')
-                                axes_profile[i].set_title(f'Average {col}')
-                                axes_profile[i].set_xlabel('Cluster')
-                                axes_profile[i].set_ylabel(col)
-                                axes_profile[i].grid(axis='y')
-
-                            plt.tight_layout(rect=[0, 0.03, 1, 0.96])
-                            st.pyplot(fig_profile)
-
-                            # Save profile plot to bytes for report
-                            profile_plot_buffer = io.BytesIO()
-                            fig_profile.savefig(profile_plot_buffer, format='png', bbox_inches='tight')
-                            profile_plot_bytes = profile_plot_buffer.getvalue()
-                            plt.close(fig_profile) # Close figure to free memory
+                        # --- Evaluation Metrics ---
+                        st.subheader("4.1 Evaluation Metrics")
+                        # Calculate metrics on the full clustered data (scaled_df)
+                        # Ensure metrics are calculated only for valid clusters (more than 1 non-noise cluster)
+                        if len(np.unique(cluster_labels)) > 1 and (-1 not in np.unique(cluster_labels) or len(np.unique(cluster_labels)) > 2): # At least 2 non-noise clusters
+                            final_silhouette = silhouette_score(scaled_df, cluster_labels)
+                            final_davies_bouldin = davies_bouldin_score(scaled_df, cluster_labels)
+                            final_calinski_harabasz = calinski_harabasz_score(scaled_df, cluster_labels)
+                            st.write(f"- **Silhouette Score**: {format_metric(final_silhouette)}")
+                            st.write(f"- **Davies-Bouldin Index**: {format_metric(final_davies_bouldin)}")
+                            st.write(f"- **Calinski-Harabasz Index**: {format_metric(final_calinski_harabasz)}")
                         else:
-                            st.info("No numeric features selected to generate cluster profile plots.")
-                            profile_plot_bytes = None
-                    else:
+                            st.warning("Cannot compute standard metrics (less than 2 valid clusters or only noise found after clustering).")
+
+
+                        # --- Cluster Profiles ---
+                        st.subheader("4.2 Cluster Profiles")
+                        if not cluster_means_numeric.empty:
+                            st.write("#### Average Numeric Features per Cluster:")
+                            st.dataframe(cluster_means_numeric.round(2))
+
+                        if selected_categorical_cols:
+                            for cat_col in selected_categorical_cols:
+                                if cat_col in cluster_cat_proportions:
+                                    st.write(f"#### Proportions for {cat_col} per Cluster:")
+                                    st.dataframe((cluster_cat_proportions[cat_col]*100).round(1))
+
+                        # --- Visualizations ---
+                        st.subheader("4.3 Visualizations")
+
+                        pca_plot_bytes = None
                         profile_plot_bytes = None
 
+                        # PCA Plot
+                        if scaled_df.shape[1] >= 2 and len(np.unique(cluster_labels)) > 1: # PCA needs at least 2 features and 2 clusters
+                            pca = PCA(n_components=2, random_state=42)
+                            principal_components = pca.fit_transform(scaled_df)
+                            pca_df = pd.DataFrame(data=principal_components, columns=['PC1', 'PC2'], index=scaled_df.index)
+                            pca_df['Cluster'] = cluster_labels
 
-                    # --- Download Buttons ---
-                    st.subheader("5. Downloads")
+                            fig_pca, ax_pca = plt.subplots(figsize=(10, 7))
+                            sns.scatterplot(x='PC1', y='PC2', hue='Cluster', data=pca_df, palette='viridis', ax=ax_pca, legend='full', s=100, alpha=0.8)
+                            ax_pca.set_title(f'Customer Clusters (PCA-Reduced) - {chosen_algorithm} (k={n_clusters if n_clusters else "N/A"})')
+                            ax_pca.set_xlabel(f'Principal Component 1 ({pca.explained_variance_ratio_[0]*100:.2f}%)')
+                            ax_pca.set_ylabel(f'Principal Component 2 ({pca.explained_variance_ratio_[1]*100:.2f}%)')
+                            ax_pca.grid(True)
+                            st.pyplot(fig_pca)
 
-                    # Prepare report settings for the report function
-                    report_settings = {
-                        'original_shape': df.shape,
-                        'selected_features': selected_numeric_cols + selected_categorical_cols,
-                        'selected_numeric_cols': selected_numeric_cols,
-                        'selected_categorical_cols': selected_categorical_cols,
-                        'missing_strategy': missing_strategy,
-                        'rows_after_missing_handling': scaled_df.shape[0],
-                        'train_ratio': train_ratio, # This is not used in the report, but kept for consistency
-                        'chosen_algorithm': chosen_algorithm,
-                        'n_clusters': n_clusters,
-                        'eps_dbscan': eps_dbscan,
-                        'min_samples_dbscan': min_samples_dbscan,
-                        'final_silhouette_score_train': final_silhouette if 'final_silhouette' in locals() else None,
-                        'final_davies_bouldin_score_train': final_davies_bouldin if 'final_davies_bouldin' in locals() else None,
-                        'final_calinski_harabasz_score_train': final_calinski_harabasz if 'final_calinski_harabasz' in locals() else None,
-                        # Test scores are not calculated in this Streamlit app for simplicity, as we use full data for training
-                        'n_noise_points_train': n_noise_points,
-                    }
+                            # Save PCA plot to bytes for report
+                            pca_plot_buffer = io.BytesIO()
+                            fig_pca.savefig(pca_plot_buffer, format='png', bbox_inches='tight')
+                            pca_plot_bytes = pca_plot_buffer.getvalue()
+                            plt.close(fig_pca) # Close figure to free memory
+                        else:
+                            st.info("PCA plot requires at least 2 features and more than 1 cluster.")
 
-                    # Generate and Download Report
-                    with st.spinner("Generating comprehensive report..."):
-                        report_bytes = generate_comprehensive_report(
-                            report_settings, df, df_clustered_output,
-                            pca_plot_bytes, profile_plot_bytes,
-                            cluster_means_numeric, cluster_cat_proportions
+
+                        # Cluster Profile Bar Plots
+                        if not cluster_means_numeric.empty:
+                            num_numeric_features = len(selected_numeric_cols)
+                            if num_numeric_features > 0:
+                                fig_profile, axes_profile = plt.subplots(num_numeric_features, 1, figsize=(10, 4 * num_numeric_features))
+                                fig_profile.suptitle('Average Feature Values per Cluster (Original Scale)', y=1.02, fontsize=16)
+
+                                if num_numeric_features == 1:
+                                    axes_profile = [axes_profile]
+
+                                for i, col in enumerate(selected_numeric_cols):
+                                    sns.barplot(x=cluster_means_numeric.index, y=cluster_means_numeric[col], ax=axes_profile[i], palette='viridis')
+                                    axes_profile[i].set_title(f'Average {col}')
+                                    axes_profile[i].set_xlabel('Cluster')
+                                    axes_profile[i].set_ylabel(col)
+                                    axes_profile[i].grid(axis='y')
+
+                                plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+                                st.pyplot(fig_profile)
+
+                                # Save profile plot to bytes for report
+                                profile_plot_buffer = io.BytesIO()
+                                fig_profile.savefig(profile_plot_buffer, format='png', bbox_inches='tight')
+                                profile_plot_bytes = profile_plot_buffer.getvalue()
+                                plt.close(fig_profile) # Close figure to free memory
+                            else:
+                                st.info("No numeric features selected to generate cluster profile plots.")
+                        
+                        # --- Download Buttons ---
+                        st.subheader("5. Downloads")
+
+                        # Prepare report settings for the report function
+                        report_settings = {
+                            'original_shape': df.shape,
+                            'selected_features': selected_numeric_cols + selected_categorical_cols,
+                            'selected_numeric_cols': selected_numeric_cols,
+                            'selected_categorical_cols': selected_categorical_cols,
+                            'missing_strategy': missing_strategy,
+                            'rows_after_missing_handling': scaled_df.shape[0],
+                            'train_ratio': train_ratio, # This is not used in the report, but kept for consistency
+                            'chosen_algorithm': chosen_algorithm,
+                            'n_clusters': n_clusters,
+                            'eps_dbscan': eps_dbscan,
+                            'min_samples_dbscan': min_samples_dbscan,
+                            'final_silhouette_score_train': final_silhouette if 'final_silhouette' in locals() else None,
+                            'final_davies_bouldin_score_train': final_davies_bouldin if 'final_davies_bouldin' in locals() else None,
+                            'final_calinski_harabasz_score_train': final_calinski_harabasz if 'final_calinski_harabasz' in locals() else None,
+                            # Test scores are not calculated in this Streamlit app for simplicity, as we use full data for training
+                            'n_noise_points_train': n_noise_points,
+                        }
+
+                        # Generate and Download Report
+                        with st.spinner("Generating comprehensive report..."):
+                            report_bytes = generate_comprehensive_report(
+                                report_settings, df, df_clustered_output,
+                                pca_plot_bytes, profile_plot_bytes,
+                                cluster_means_numeric, cluster_cat_proportions
+                            )
+                        st.download_button(
+                            label="Download Comprehensive Report (.docx)",
+                            data=report_bytes,
+                            file_name=f"Customer_Segmentation_Report_{pd.to_datetime('today').strftime('%Y%m%d_%H%M%S')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         )
-                    st.download_button(
-                        label="Download Comprehensive Report (.docx)",
-                        data=report_bytes,
-                        file_name=f"Customer_Segmentation_Report_{pd.to_datetime('today').strftime('%Y%m%d_%H%M%S')}.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
 
-                    # Download Clustered Data
-                    csv_buffer = io.StringIO()
-                    df_clustered_output.to_csv(csv_buffer, index=False)
-                    st.download_button(
-                        label="Download Clustered Data (.csv)",
-                        data=csv_buffer.getvalue(),
-                        file_name=f"Clustered_Customer_Data_{pd.to_datetime('today').strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                    )
-
+                        # Download Clustered Data
+                        csv_buffer = io.StringIO()
+                        df_clustered_output.to_csv(csv_buffer, index=False)
+                        st.download_button(
+                            label="Download Clustered Data (.csv)",
+                            data=csv_buffer.getvalue(),
+                            file_name=f"Clustered_Customer_Data_{pd.to_datetime('today').strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                        )
+                    else:
+                        st.warning("No valid clusters were formed. Adjust parameters or select different features.")
                 else:
                     st.error("Clustering failed. Please check your data and selected parameters.")
 
