@@ -1,1 +1,9 @@
-
+streamlit
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+plotly
+python-docx
+# If you added any other specific libraries, list them here too.
