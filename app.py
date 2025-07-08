@@ -87,17 +87,13 @@ def evaluate_algorithms(scaled_df_input, k_range_eval):
         return kmeans_scores, gmm_scores, agglo_scores
 
     total_steps = len(k_range_eval)
-    # --- START OF PROGRESS BAR ADDITION ---
     progress_text = st.empty()
     progress_bar = st.progress(0)
-    # --- END OF PROGRESS BAR ADDITION ---
 
     for i, k in enumerate(k_range_eval):
-        # --- UPDATE PROGRESS BAR ---
         current_progress = (i + 1) / total_steps
         progress_bar.progress(current_progress)
         progress_text.text(f"Evaluating K={k} ({i+1}/{total_steps}) for KMeans, GMM, Agglomerative...")
-        # --- END UPDATE ---
 
         if k >= len(scaled_df_input): # Avoid error if k is too large for dataset size
             st.warning(f"Skipping k={k} and subsequent values as k is too large for the dataset size.")
@@ -124,10 +120,8 @@ def evaluate_algorithms(scaled_df_input, k_range_eval):
         agglo_scores['Davies-Bouldin'].append(davies_bouldin_score(scaled_df_input, agglo_labels))
         agglo_scores['Calinski-Harabasz'].append(calinski_harabasz_score(scaled_df_input, agglo_labels))
 
-    # --- CLEAR PROGRESS BAR AND TEXT AFTER COMPLETION ---
     progress_text.empty() # Clear the text
     progress_bar.empty() # Clear the bar once done
-    # --- END CLEAR ---
 
     return kmeans_scores, gmm_scores, agglo_scores
 
@@ -353,7 +347,7 @@ def generate_comprehensive_report(report_settings, df_original_full, df_clustere
         document.add_paragraph(f'\nMetrics on Test Data:')
         document.add_paragraph(f'- **Silhouette Score**: {format_metric(report_settings.get("final_silhouette_score_test"))}')
         document.add_paragraph(f'- **Davies-Bouldin Index**: {format_metric(report_settings.get("final_davies_bouldin_score_test"))}')
-        document.add_paragraph(f'- **Calinski-Harabasz Index**: {format_metric(report_settings.get("final_calinski_harabasz_test"))}')
+        document.add_paragraph(f'- **Calinski-Harabasz Index**: {format_settings.get("final_calinski_harabasz_test")}')
     elif report_settings['train_ratio'] < 1.0:
          document.add_paragraph(f'\nNote: Test set evaluation metrics were not applicable or calculated for the chosen algorithm.')
 
@@ -683,6 +677,42 @@ if df is not None:
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.96])
             st.pyplot(fig_eval)
+
+            # --- START OF NEW SECTION: How to Interpret Plots ---
+            with st.expander("💡 How to Interpret These Plots and Choose K"):
+                st.markdown("""
+                These plots help you evaluate the performance of different clustering algorithms (KMeans, Gaussian Mixture Model, Agglomerative Clustering)
+                across a range of cluster numbers (`k`). The goal is to find a `k` value and an algorithm that results in well-separated and compact clusters.
+
+                **Here's how to interpret each plot:**
+
+                ### 1. Silhouette Score (Higher is Better)
+                * **What it measures:** How similar an object is to its own cluster (cohesion) compared to other clusters (separation). The score ranges from -1 to 1.
+                * **Goal:** Look for the **highest point** on the curve. A score close to 1 indicates that data points are well-matched to their own cluster and poorly matched to neighboring clusters. Scores near 0 indicate overlapping clusters. Negative scores suggest data points might be assigned to the wrong cluster.
+
+                ### 2. Davies-Bouldin Index (Lower is Better)
+                * **What it measures:** The average similarity ratio between each cluster and its most similar cluster. Similarity is measured by the ratio of within-cluster scatter to between-cluster separation.
+                * **Goal:** Look for the **lowest point** on the curve. A lower Davies-Bouldin index indicates better clustering, where clusters are compact and well-separated from each other.
+
+                ### 3. Calinski-Harabasz Index (Higher is Better)
+                * **What it measures:** The ratio of the sum of between-clusters dispersion (variance) to the sum of within-cluster dispersion.
+                * **Goal:** Look for the **highest point** on the curve. A higher Calinski-Harabasz index generally indicates better-defined clusters, suggesting that clusters are dense and well-separated.
+
+                ---
+
+                ### **How to Choose the Optimal `k` and Algorithm:**
+
+                1.  **Examine Each Plot:** For each metric, identify the `k` value where the desired condition is met (peak for Silhouette/Calinski-Harabasz, valley for Davies-Bouldin).
+                2.  **Look for Consensus:** Ideally, you'll find a `k` value where all three metrics suggest optimal clustering. For example, a `k` where Silhouette is high, Davies-Bouldin is low, and Calinski-Harabasz is high.
+                3.  **Consider the Algorithm:** Compare the lines for KMeans, GMM, and Agglomerative Clustering. Which algorithm consistently performs better across the metrics at your chosen `k`?
+                4.  **Balance & Domain Knowledge:** There isn't always a single perfect `k`. Sometimes, a `k` that is slightly less "optimal" by metrics might make more business sense. Consider:
+                    * **Interpretability:** Are 3 clusters easier to understand and act upon than 7, even if 7 has slightly better metrics?
+                    * **Actionability:** Do the resulting cluster profiles (which you'll see later) provide meaningful and actionable insights for your business?
+                5.  **DBSCAN (No `k` choice):** Note that DBSCAN does not require you to pre-define `k`. It discovers clusters based on density. If you choose DBSCAN, you'll set `eps` (maximum distance between two samples for one to be considered as in the neighborhood of the other) and `min_samples` (the number of samples in a neighborhood for a point to be considered as a core point).
+
+                **Recommendation:** Based on these graphs, choose the algorithm and the number of clusters (`k`) in the sidebar that you believe offer the best balance of statistical performance and business interpretability.
+                """)
+            # --- END OF NEW SECTION ---
 
         st.sidebar.subheader("Final Algorithm & Parameters")
         chosen_algorithm = st.sidebar.selectbox(
