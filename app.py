@@ -680,4 +680,4 @@ if st.session_state.clustering_done:
         reset_app()
 else:
     if not st.session_state.data_uploaded:
-        st.info("Please upload a data file (.csv or .xlsx) to begin the analysis.")
+        st.info("Please upload a data file (.csv or .xlsx) at the top of the page to begin the analysis.")
