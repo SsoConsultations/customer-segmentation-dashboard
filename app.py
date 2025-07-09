@@ -208,8 +208,60 @@ def generate_plots(df, labels, numeric_cols, pca_components=2):
 
     return fig_pca, fig_profile_numeric, cluster_means_numeric, cluster_cat_proportions
 
+def generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile):
+    summaries = {}
+    
+    if cluster_means_numeric is not None and not cluster_means_numeric.empty:
+        overall_means = original_df_for_profile[cluster_means_numeric.columns].mean()
+        overall_stds = original_df_for_profile[cluster_means_numeric.columns].std()
+        
+    for cluster_id in cluster_means_numeric.index:
+        summary_lines = [f"Cluster {cluster_id}:"]
+        
+        # Numeric Feature Summary
+        if cluster_means_numeric is not None and not cluster_means_numeric.empty:
+            for col in cluster_means_numeric.columns:
+                cluster_mean = cluster_means_numeric.loc[cluster_id, col]
+                overall_mean = overall_means[col]
+                overall_std = overall_stds[col]
+
+                # Check if standard deviation is not zero to avoid division by zero
+                if overall_std > 0:
+                    z_score = (cluster_mean - overall_mean) / overall_std
+                    
+                    if z_score > 0.75: # More than 0.75 standard deviations above average
+                        summary_lines.append(f"- Has a **higher than average** {col.replace('_', ' ').lower()} ({cluster_mean:.2f}).")
+                    elif z_score < -0.75: # More than 0.75 standard deviations below average
+                        summary_lines.append(f"- Has a **lower than average** {col.replace('_', ' ').lower()} ({cluster_mean:.2f}).")
+                    # Else, it's considered average
+                elif cluster_mean > overall_mean: # If std is 0, but cluster mean is higher
+                    summary_lines.append(f"- Has a **higher** {col.replace('_', ' ').lower()} ({cluster_mean:.2f}).")
+                elif cluster_mean < overall_mean: # If std is 0, but cluster mean is lower
+                    summary_lines.append(f"- Has a **lower** {col.replace('_', ' ').lower()} ({cluster_mean:.2f}).")
+
+
+        # Categorical Feature Summary
+        for cat_col, proportions_df in cluster_cat_proportions.items():
+            if cluster_id in proportions_df.index: # Check if cluster exists in proportions_df
+                # Get the most dominant category for this cluster
+                dominant_category = proportions_df.loc[cluster_id].idxmax()
+                dominant_proportion = proportions_df.loc[cluster_id, dominant_category]
+
+                # Get overall proportion of this dominant category
+                overall_proportion_dominant_cat = original_df_for_profile[cat_col].value_counts(normalize=True).get(dominant_category, 0)
+                
+                # Simple check for significant difference
+                if dominant_proportion > overall_proportion_dominant_cat * 1.5 and dominant_proportion > 0.3: # 50% higher than average and at least 30% within cluster
+                    summary_lines.append(f"- Predominantly features **{dominant_category}** for {cat_col.replace('_', ' ').lower()} ({dominant_proportion:.1%}).")
+                elif dominant_proportion > 0.5: # If no overall comparison, just state if it's a majority
+                     summary_lines.append(f"- Is mainly characterized by **{dominant_category}** for {cat_col.replace('_', ' ').lower()} ({dominant_proportion:.1%}).")
+
+
+        summaries[cluster_id] = "\n".join(summary_lines)
+    return summaries
+
 # Re-integrated create_report function
-def create_report(document, algorithm, params, metrics, data_preview_df, pca_plot_bytes, profile_plot_bytes, cluster_means_numeric, cluster_cat_proportions):
+def create_report(document, algorithm, params, metrics, data_preview_df, pca_plot_bytes, profile_plot_bytes, cluster_means_numeric, cluster_cat_proportions, original_df_for_profile):
     """Generates a comprehensive Word document report."""
     document.add_heading('Customer Segmentation Report', level=1)
     document.add_paragraph(f"Report generated on: {pd.to_datetime('today').strftime('%Y-%m-%d %H:%M:%S')}")
@@ -300,6 +352,19 @@ def create_report(document, algorithm, params, metrics, data_preview_df, pca_plo
             document.add_paragraph() # Add space between tables
     else:
         document.add_paragraph("No categorical cluster proportions available.")
+
+    # New Section: Cluster Summaries
+    document.add_heading('7. Cluster Summaries and Characteristics', level=2)
+    if cluster_means_numeric is not None and not cluster_means_numeric.empty and cluster_cat_proportions is not None:
+        cluster_summaries = generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile)
+        if cluster_summaries:
+            for cluster_id in sorted(cluster_summaries.keys()):
+                document.add_paragraph(cluster_summaries[cluster_id])
+                document.add_paragraph() # Add a blank line for separation
+        else:
+            document.add_paragraph("Unable to generate detailed cluster summaries.")
+    else:
+        document.add_paragraph("Not enough data (numeric or categorical profiles) to generate detailed cluster summaries.")
 
     document.add_page_break()
 
@@ -647,8 +712,12 @@ When you're ready, click the button below to run clustering and generate results
             st.write(f"**Davies-Bouldin Index:** {format_metric(davies_bouldin)}")
             st.write(f"**Calinski-Harabasz Index:** {format_metric(calinski_harabasz)}")
 
+            # Ensure df_profile has the cluster labels for accurate plot and summary generation
+            df_profile_with_labels = df_profile.copy()
+            df_profile_with_labels['Cluster'] = labels
+
             fig_pca, fig_profile_numeric, cluster_means_numeric, cluster_cat_proportions = generate_plots(
-                df_profile, labels, selected_numeric
+                df_profile_with_labels, labels, selected_numeric
             )
 
             col1, col2 = st.columns(2)
@@ -669,21 +738,17 @@ When you're ready, click the button below to run clustering and generate results
             else:
                 st.info("No numeric cluster means to display (check selected features).")
 
-            df_clustered_output = df_profile.copy()
-            df_clustered_output['Cluster'] = labels
-
             if selected_categorical:
                 st.subheader("Categorical Feature Distributions per Cluster")
                 for cat in selected_categorical:
-                    if cat in df_clustered_output.columns:
-                        prop_df = pd.crosstab(df_clustered_output["Cluster"], df_clustered_output[cat], normalize="index")
+                    if cat in df_profile_with_labels.columns:
+                        prop_df = pd.crosstab(df_profile_with_labels["Cluster"], df_profile_with_labels[cat], normalize="index")
                         st.markdown(f"**{cat}:**")
                         st.dataframe((prop_df * 100).round(1))
                     else:
                         st.warning(f"Categorical column '{cat}' not found in clustered data for distribution plot.")
             else:
                 st.info("No categorical cluster proportions to display (no categorical features selected).")
-
 
             st.subheader("7️⃣ Download Results")
             st.info("You can download the clustered data or a full report summarizing the analysis.")
@@ -709,11 +774,12 @@ When you're ready, click the button below to run clustering and generate results
                 chosen_algo,
                 {'n_clusters': n_clusters, 'eps': eps, 'min_samples': min_samples} if chosen_algo != 'DBSCAN' else {'eps': eps, 'min_samples': min_samples},
                 {'silhouette': silhouette, 'davies_bouldin': davies_bouldin, 'calinski_harabasz': calinski_harabasz},
-                df_clustered_output.head(5),
+                df_profile_with_labels.head(5), # Use df_profile_with_labels for preview
                 pca_plot_bytes.getvalue() if pca_plot_bytes else None,
                 profile_plot_bytes.getvalue() if profile_plot_bytes else None,
                 cluster_means_numeric,
-                cluster_cat_proportions
+                cluster_cat_proportions,
+                df_profile # Pass original df_profile without labels for overall stats
             )
             document.save(report_bytes_io)
             report_bytes = report_bytes_io.getvalue()
@@ -727,7 +793,7 @@ When you're ready, click the button below to run clustering and generate results
             )
 
             csv_buffer = io.StringIO()
-            df_clustered_output.to_csv(csv_buffer, index=False)
+            df_profile_with_labels.to_csv(csv_buffer, index=False) # Save df_profile_with_labels for download
             st.download_button(
                 label="📥 Download Clustered Data (CSV)",
                 data=csv_buffer.getvalue(),
