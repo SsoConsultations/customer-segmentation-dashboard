@@ -79,7 +79,6 @@ def main_app():
 
     st.markdown("""
     Welcome! This app helps you discover customer segments using unsupervised machine learning.
-    **Each step comes with simple explanations so you don't need technical knowledge to use it.**
     """)
 
     # --- Logout Button ---
