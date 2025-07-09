@@ -45,9 +45,38 @@ Welcome! This app helps you discover customer segments using unsupervised machin
 def format_metric(value):
     return f'{value:.4f}' if isinstance(value, (int, float)) else "N/A"
 
+# Function to detect potential ID columns
+def detect_potential_id_columns(df, uniqueness_threshold=0.9):
+    potential_ids = []
+    for col in df.columns:
+        # Check for common ID-like names
+        if any(keyword in col.lower() for keyword in ['id', 'user_id', 'customer_id', 'client_id']):
+            potential_ids.append(col)
+            continue
+        
+        # Check uniqueness ratio for non-numeric or string-like numeric columns
+        # First, try to convert to numeric to handle cases like '85%'
+        temp_col = df[col].copy()
+        try:
+            # Try to convert to numeric, coercing errors
+            numeric_check = pd.to_numeric(temp_col, errors='coerce')
+            # If it's mostly numbers, but still has high unique count, it might be an ID
+            if not numeric_check.isnull().all(): # Make sure it's not all NaNs after coercion
+                if numeric_check.nunique() / len(df) > uniqueness_threshold:
+                    potential_ids.append(col)
+                    continue
+        except Exception:
+            # If not numeric, check uniqueness for string/object types
+            if df[col].dtype == 'object' and df[col].nunique() / len(df) > uniqueness_threshold:
+                potential_ids.append(col)
+                continue
+    return list(set(potential_ids)) # Use set to remove duplicates
+
 @st.cache_data
 def preprocess_data(df, numeric, categorical, missing):
+    # Ensure only selected features are passed for preprocessing
     df_proc = df[numeric + categorical].copy()
+    
     if missing == "drop_rows":
         df_proc.dropna(inplace=True)
     else:
@@ -55,6 +84,9 @@ def preprocess_data(df, numeric, categorical, missing):
             df_proc[col].fillna(df_proc[col].mean(), inplace=True)
         for col in categorical:
             df_proc[col].fillna(df_proc[col].mode()[0], inplace=True)
+    
+    # Store df_for_profile before one-hot encoding for accurate profile generation
+    # It should include original numeric and categorical columns
     df_for_profile = df_proc.copy()
 
     encoded_features = []
@@ -74,24 +106,36 @@ def preprocess_data(df, numeric, categorical, missing):
 @st.cache_data
 def evaluate_models(scaled_df, k_range):
     scores = {}
+    inertia_kmeans = []
+    aic_gmm = []
+    bic_gmm = []
+
     for algo in ["KMeans", "GMM", "Agglomerative"]:
         scores[algo] = {"Silhouette": [], "Davies": [], "Calinski": []}
         for k in k_range:
             if k >= len(scaled_df):
-                # Ensure enough samples for clustering and score calculation
                 scores[algo]["Silhouette"].append(np.nan)
                 scores[algo]["Davies"].append(np.nan)
                 scores[algo]["Calinski"].append(np.nan)
-                continue # Skip if not enough samples
+                if algo == "KMeans":
+                    inertia_kmeans.append(np.nan)
+                elif algo == "GMM":
+                    aic_gmm.append(np.nan)
+                    bic_gmm.append(np.nan)
+                continue
             try:
                 if algo == "KMeans":
-                    labels = KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(scaled_df)
+                    model = KMeans(n_clusters=k, n_init=10, random_state=42)
+                    labels = model.fit_predict(scaled_df)
+                    inertia_kmeans.append(model.inertia_)
                 elif algo == "GMM":
-                    labels = GaussianMixture(n_components=k, random_state=42).fit_predict(scaled_df)
+                    model = GaussianMixture(n_components=k, random_state=42)
+                    labels = model.fit_predict(scaled_df)
+                    aic_gmm.append(model.aic(scaled_df))
+                    bic_gmm.append(model.bic(scaled_df))
                 else: # Agglomerative
                     labels = AgglomerativeClustering(n_clusters=k).fit_predict(scaled_df)
 
-                # Ensure more than one cluster formed to calculate scores
                 if len(np.unique(labels)) > 1:
                     scores[algo]["Silhouette"].append(silhouette_score(scaled_df, labels))
                     scores[algo]["Davies"].append(davies_bouldin_score(scaled_df, labels))
@@ -104,7 +148,13 @@ def evaluate_models(scaled_df, k_range):
                 scores[algo]["Silhouette"].append(np.nan)
                 scores[algo]["Davies"].append(np.nan)
                 scores[algo]["Calinski"].append(np.nan)
-    return scores
+                if algo == "KMeans":
+                    inertia_kmeans.append(np.nan)
+                elif algo == "GMM":
+                    aic_gmm.append(np.nan)
+                    bic_gmm.append(np.nan)
+    
+    return scores, {"KMeans_Inertia": inertia_kmeans, "GMM_AIC": aic_gmm, "GMM_BIC": bic_gmm}
 
 @st.cache_data
 def generate_plots(df, labels, numeric_cols, pca_components=2):
@@ -149,11 +199,10 @@ def generate_plots(df, labels, numeric_cols, pca_components=2):
 
     # Categorical Feature Proportions
     cluster_cat_proportions = {}
-    # FIX: Corrected list comprehension syntax for original_cat_in_df_clustered
     original_cat_in_df_clustered = [col for col in df_clustered.columns if df_clustered[col].dtype == 'object' and col != 'Cluster']
     
     for col in original_cat_in_df_clustered:
-        if col in df_clustered.columns: # Redundant check but harmless
+        if col in df_clustered.columns: 
             proportions = df_clustered.groupby('Cluster')[col].value_counts(normalize=True).unstack(fill_value=0)
             cluster_cat_proportions[col] = proportions
 
@@ -174,10 +223,10 @@ def create_report(document, algorithm, params, metrics, data_preview_df, pca_plo
     document.add_heading('2. Clustering Parameters', level=2)
     document.add_paragraph(f"Algorithm Used: {algorithm}")
     for param, value in params.items():
-        document.add_paragraph(f"- {param.replace('_', ' ').title()}: {value}")
+        if value is not None: # Only add if parameter has a value
+            document.add_paragraph(f"- {param.replace('_', ' ').title()}: {value}")
     
     document.add_heading('3. Model Performance Metrics', level=2)
-    # Ensure metrics are formatted or N/A if not available
     silhouette_str = format_metric(metrics.get('silhouette'))
     davies_bouldin_str = format_metric(metrics.get('davies_bouldin'))
     calinski_harabasz_str = format_metric(metrics.get('calinski_harabasz'))
@@ -285,12 +334,36 @@ Here are the first 5 rows of your data:
     st.dataframe(df.head())
 
     all_columns = df.columns.tolist()
-    numeric_cols = [c for c in all_columns if pd.api.types.is_numeric_dtype(df[c])]
-    categorical_cols = [c for c in all_columns if pd.api.types.is_object_dtype(df[c])]
-
+    
+    # Automatic ID column detection
+    potential_id_cols = detect_potential_id_columns(df)
+    
+    st.subheader("Exclude Columns")
     st.markdown("""
-Below, choose which columns to include in clustering.
-""")
+    Select any columns that should **not** be used for clustering (e.g., ID columns).
+    """)
+    excluded_columns = st.multiselect(
+        "Columns to Exclude (e.g., IDs)",
+        all_columns,
+        default=potential_id_cols
+    )
+
+    # Filter out excluded columns from the main selection pool
+    available_columns_for_selection = [col for col in all_columns if col not in excluded_columns]
+
+    # Pre-process columns to better infer types
+    processed_numeric_cols = []
+    processed_categorical_cols = []
+    for col in available_columns_for_selection:
+        # Try converting to numeric, handling potential non-numeric strings (like '85%')
+        temp_series = pd.to_numeric(df[col], errors='coerce')
+        if pd.api.types.is_numeric_dtype(temp_series) and not temp_series.isnull().all():
+            processed_numeric_cols.append(col)
+        elif pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_categorical_dtype(df[col]):
+            processed_categorical_cols.append(col)
+        # If a column was purely numeric from start, it will be in processed_numeric_cols
+        # If it was object and could be converted to numeric (like '85%'), it will be in processed_numeric_cols
+        # Otherwise, it stays in processed_categorical_cols (if it was an object/categorical)
 
     st.subheader("Select Numeric Features")
     st.markdown("""
@@ -299,8 +372,8 @@ These will be standardized so that all values are on the same scale.
 """)
     selected_numeric = st.multiselect(
         "Numeric Columns",
-        numeric_cols,
-        default=numeric_cols
+        processed_numeric_cols,
+        default=processed_numeric_cols
     )
 
     st.subheader("Select Categorical Features")
@@ -310,8 +383,8 @@ These will be automatically converted into numeric format.
 """)
     selected_categorical = st.multiselect(
         "Categorical Columns",
-        categorical_cols,
-        default=categorical_cols
+        processed_categorical_cols,
+        default=processed_categorical_cols
     )
 
     st.subheader("Handle Missing Data")
@@ -345,17 +418,23 @@ If you're not sure, leave this at **0** to use all data.
     )
 
     if not selected_numeric and not selected_categorical:
-        st.warning("Please select at least one numeric or categorical column.")
+        st.warning("Please select at least one numeric or categorical column for clustering.")
         st.stop()
 
     # Preprocess Data
     st.header("3️⃣ Data Preprocessing")
 
     with st.spinner("Preprocessing your data..."):
-        scaled_df, df_profile = preprocess_data(df, selected_numeric, selected_categorical, missing_strategy)
+        # Ensure df passed to preprocess_data only contains selected columns
+        df_for_preprocessing = df[selected_numeric + selected_categorical].copy()
+        # Convert identified numeric strings to actual numbers *before* preprocessing
+        for col in selected_numeric:
+            df_for_preprocessing[col] = pd.to_numeric(df_for_preprocessing[col], errors='coerce')
+        
+        scaled_df, df_profile = preprocess_data(df_for_preprocessing, selected_numeric, selected_categorical, missing_strategy)
 
     st.success("✅ Preprocessing complete!")
-    st.write("Here is a preview of your processed data:")
+    st.write("Here is a preview of your processed data (scaled and one-hot encoded where applicable):")
     st.dataframe(scaled_df.head())
 
     # Clustering Evaluation
@@ -369,32 +448,31 @@ This helps you see which method separates your data best.
     k_range = range(2, min(11, len(scaled_df) + 1)) # Ensure k does not exceed number of samples
 
     with st.spinner("Evaluating clustering performance..."):
-        scores = evaluate_models(scaled_df, k_range)
+        scores, additional_metrics = evaluate_models(scaled_df, k_range)
 
     # Plot metrics
-    fig, axes = plt.subplots(3, 1, figsize=(10, 15))
+    fig_metrics, axes_metrics = plt.subplots(3, 1, figsize=(10, 15))
     for algo in scores:
-        # Filter out NaN scores for plotting
         k_values_plot = [k_range[i] for i, score in enumerate(scores[algo]["Silhouette"]) if not np.isnan(score)]
         silhouette_scores_plot = [score for score in scores[algo]["Silhouette"] if not np.isnan(score)]
         davies_scores_plot = [score for score in scores[algo]["Davies"] if not np.isnan(score)]
         calinski_scores_plot = [score for score in scores[algo]["Calinski"] if not np.isnan(score)]
 
-        if k_values_plot: # Only plot if there's valid data
-            axes[0].plot(k_values_plot, silhouette_scores_plot, label=algo)
-            axes[1].plot(k_values_plot, davies_scores_plot, label=algo)
-            axes[2].plot(k_values_plot, calinski_scores_plot, label=algo)
+        if k_values_plot:
+            axes_metrics[0].plot(k_values_plot, silhouette_scores_plot, label=algo)
+            axes_metrics[1].plot(k_values_plot, davies_scores_plot, label=algo)
+            axes_metrics[2].plot(k_values_plot, calinski_scores_plot, label=algo)
             
-    axes[0].set_title("Silhouette Score (Higher is better)")
-    axes[1].set_title("Davies-Bouldin Index (Lower is better)")
-    axes[2].set_title("Calinski-Harabasz Index (Higher is better)")
-    for ax in axes:
+    axes_metrics[0].set_title("Silhouette Score (Higher is better)")
+    axes_metrics[1].set_title("Davies-Bouldin Index (Lower is better)")
+    axes_metrics[2].set_title("Calinski-Harabasz Index (Higher is better)")
+    for ax in axes_metrics:
         ax.legend()
         ax.grid()
-        ax.set_xlabel("Number of Clusters (k)") # Add x-label for clarity
-    plt.tight_layout() # Adjust layout to prevent overlapping
-    st.pyplot(fig)
-    plt.close(fig) # Close figure to free memory
+        ax.set_xlabel("Number of Clusters (k)")
+    plt.tight_layout()
+    st.pyplot(fig_metrics)
+    plt.close(fig_metrics)
 
     st.markdown("""
 **How to Read These Graphs:**
@@ -403,18 +481,49 @@ This helps you see which method separates your data best.
 - **Calinski-Harabasz Index:** Higher means better defined clusters.
 """)
 
+    # Plot Elbow Method (KMeans) and AIC/BIC (GMM)
+    st.subheader("Elbow Method (K-Means) and AIC/BIC (GMM)")
+    fig_elbow, ax_elbow = plt.subplots(figsize=(10, 6))
+    
+    # KMeans Inertia
+    k_values_kmeans = [k_range[i] for i, val in enumerate(additional_metrics["KMeans_Inertia"]) if not np.isnan(val)]
+    inertia_plot = [val for val in additional_metrics["KMeans_Inertia"] if not np.isnan(val)]
+    if k_values_kmeans:
+        ax_elbow.plot(k_values_kmeans, inertia_plot, marker='o', label='K-Means Inertia (Lower is better)')
+
+    # GMM AIC and BIC
+    k_values_gmm = [k_range[i] for i, val in enumerate(additional_metrics["GMM_AIC"]) if not np.isnan(val)]
+    aic_plot = [val for val in additional_metrics["GMM_AIC"] if not np.isnan(val)]
+    bic_plot = [val for val in additional_metrics["GMM_BIC"] if not np.isnan(val)]
+    if k_values_gmm:
+        ax_elbow.plot(k_values_gmm, aic_plot, marker='x', linestyle='--', label='GMM AIC (Lower is better)')
+        ax_elbow.plot(k_values_gmm, bic_plot, marker='s', linestyle=':', label='GMM BIC (Lower is better)')
+
+    ax_elbow.set_title("Elbow Method for K-Means and Information Criteria for GMM")
+    ax_elbow.set_xlabel("Number of Clusters (k)")
+    ax_elbow.set_ylabel("Score")
+    ax_elbow.legend()
+    ax_elbow.grid()
+    plt.tight_layout()
+    st.pyplot(fig_elbow)
+    plt.close(fig_elbow)
+
+    st.markdown("""
+**How to Read Elbow/Information Criteria Plots:**
+- **K-Means Inertia (Elbow Method):** Look for a 'bend' or 'elbow' in the plot. This point often indicates a good balance between minimizing inertia and keeping the number of clusters manageable. Lower inertia is better.
+- **GMM AIC/BIC:** These criteria penalize model complexity. Lower values generally indicate a better-fitting model.
+""")
+
     # Model Recommendation
     st.header("🔍 Recommended Model Based on Metrics")
 
     recommendations = []
     for algo in scores:
-        # Filter out NaN scores to find best
         valid_silhouette_scores = [s for s in scores[algo]["Silhouette"] if not np.isnan(s)]
         if valid_silhouette_scores:
             idx_best = np.argmax(valid_silhouette_scores)
-            k_best = k_range[idx_best] # Use original k_range index
+            k_best = k_range[idx_best] 
             
-            # Retrieve corresponding scores, handling potential NaN
             silhouette_val = scores[algo]["Silhouette"][idx_best] if idx_best < len(scores[algo]["Silhouette"]) else np.nan
             davies_val = scores[algo]["Davies"][idx_best] if idx_best < len(scores[algo]["Davies"]) else np.nan
             calinski_val = scores[algo]["Calinski"][idx_best] if idx_best < len(scores[algo]["Calinski"]) else np.nan
@@ -428,8 +537,7 @@ This helps you see which method separates your data best.
             })
 
     if recommendations:
-        # Recommend the one with the highest silhouette among valid ones
-        best = max(recommendations, key=lambda x: x["silhouette"] if not np.isnan(x["silhouette"]) else -np.inf) # Handle NaN in max
+        best = max(recommendations, key=lambda x: x["silhouette"] if not np.isnan(x["silhouette"]) else -np.inf)
         
         st.success(
             f"**Recommended:** {best['algorithm']} with {best['k']} clusters "
@@ -447,10 +555,8 @@ This helps you see which method separates your data best.
     st.markdown("""
 You can choose the recommended option or pick any algorithm and parameters yourself.
 """)
-    # Add guidance for re-running with new parameters on the same dataset
     st.info("💡 To re-run clustering with different parameters on the *current dataset*, simply adjust the 'Number of clusters (k)' or 'DBSCAN' settings below and click the '🚀 Run Clustering' button again.")
 
-    # Set default for chosen_algo based on recommendation, if available
     default_algo_index = 0
     if recommendations and best["algorithm"] in ["KMeans", "Gaussian Mixture Model", "Agglomerative Clustering"]:
          default_algo_index = ["KMeans", "Gaussian Mixture Model", "Agglomerative Clustering", "DBSCAN"].index(best["algorithm"])
@@ -466,18 +572,17 @@ You can choose the recommended option or pick any algorithm and parameters yours
     min_samples = None
 
     if chosen_algo in ["KMeans", "Gaussian Mixture Model", "Agglomerative Clustering"]:
-        # Set default for n_clusters based on recommendation, if available
         default_n_clusters = int(best["k"]) if recommendations and not np.isnan(best["k"]) else 3
 
         n_clusters = st.slider(
             "Number of clusters (k)",
             min_value=2,
-            max_value=min(10, len(scaled_df)), # Max k is min of 10 or dataset size
+            max_value=min(10, len(scaled_df)),
             value=default_n_clusters
         )
         if len(scaled_df) < n_clusters:
             st.warning(f"Number of clusters ({n_clusters}) exceeds the number of samples ({len(scaled_df)}). Adjust 'k'.")
-            st.stop() # Stop execution until valid k is selected
+            st.stop()
 
     else: # DBSCAN
         eps = st.slider(
@@ -519,7 +624,6 @@ When you're ready, click the button below to run clustering and generate results
                     model = DBSCAN(eps=eps, min_samples=min_samples)
                     labels = model.fit_predict(scaled_df)
                 
-                # Calculate metrics only if more than one cluster formed
                 if labels is not None and len(np.unique(labels)) > 1:
                     silhouette = silhouette_score(scaled_df, labels)
                     davies_bouldin = davies_bouldin_score(scaled_df, labels)
@@ -529,15 +633,13 @@ When you're ready, click the button below to run clustering and generate results
 
             except Exception as e:
                 st.error(f"Error during clustering: {e}. Please check your data and parameters.")
-                labels = None # Ensure labels are None if clustering fails
+                labels = None
 
-        if labels is not None and len(np.unique(labels)) > 1: # Ensure more than one cluster and successful run
-            st.session_state.analysis_completed = True # Mark analysis as completed
+        if labels is not None and len(np.unique(labels)) > 1:
+            st.session_state.analysis_completed = True
             st.success(f"✅ Clustering completed. Found {len(np.unique(labels))} clusters.")
 
-            # Show cluster counts
-            unique, counts = np.unique(labels, return_counts=True)
-            cluster_counts_df = pd.DataFrame({"Cluster": unique, "Count": counts})
+            cluster_counts_df = pd.DataFrame({"Cluster": np.unique(labels), "Count": np.bincount(labels[labels != -1]) if -1 in labels else np.bincount(labels)})
             st.write("**Cluster Distribution:**")
             st.dataframe(cluster_counts_df)
 
@@ -545,7 +647,6 @@ When you're ready, click the button below to run clustering and generate results
             st.write(f"**Davies-Bouldin Index:** {format_metric(davies_bouldin)}")
             st.write(f"**Calinski-Harabasz Index:** {format_metric(calinski_harabasz)}")
 
-            # Generate Plots
             fig_pca, fig_profile_numeric, cluster_means_numeric, cluster_cat_proportions = generate_plots(
                 df_profile, labels, selected_numeric
             )
@@ -568,15 +669,13 @@ When you're ready, click the button below to run clustering and generate results
             else:
                 st.info("No numeric cluster means to display (check selected features).")
 
-            # Add Cluster column to original DataFrame subset
             df_clustered_output = df_profile.copy()
-            df_clustered_output['Cluster'] = labels # Ensure 'Cluster' column is added here
+            df_clustered_output['Cluster'] = labels
 
-            if selected_categorical: # Check if there are any categorical features selected
+            if selected_categorical:
                 st.subheader("Categorical Feature Distributions per Cluster")
-                for cat in selected_categorical: # Iterate through selected categorical
-                    # FIX: Use df_clustered_output instead of df_profile for crosstab
-                    if cat in df_clustered_output.columns: # Check if column exists in df_clustered_output
+                for cat in selected_categorical:
+                    if cat in df_clustered_output.columns:
                         prop_df = pd.crosstab(df_clustered_output["Cluster"], df_clustered_output[cat], normalize="index")
                         st.markdown(f"**{cat}:**")
                         st.dataframe((prop_df * 100).round(1))
@@ -589,7 +688,6 @@ When you're ready, click the button below to run clustering and generate results
             st.subheader("7️⃣ Download Results")
             st.info("You can download the clustered data or a full report summarizing the analysis.")
 
-            # Generate Word Report
             document = Document()
             pca_plot_bytes = io.BytesIO()
             if fig_pca:
@@ -611,7 +709,7 @@ When you're ready, click the button below to run clustering and generate results
                 chosen_algo,
                 {'n_clusters': n_clusters, 'eps': eps, 'min_samples': min_samples} if chosen_algo != 'DBSCAN' else {'eps': eps, 'min_samples': min_samples},
                 {'silhouette': silhouette, 'davies_bouldin': davies_bouldin, 'calinski_harabasz': calinski_harabasz},
-                df_clustered_output.head(5), # Pass data preview
+                df_clustered_output.head(5),
                 pca_plot_bytes.getvalue() if pca_plot_bytes else None,
                 profile_plot_bytes.getvalue() if profile_plot_bytes else None,
                 cluster_means_numeric,
@@ -628,7 +726,6 @@ When you're ready, click the button below to run clustering and generate results
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
 
-            # Download Clustered Data
             csv_buffer = io.StringIO()
             df_clustered_output.to_csv(csv_buffer, index=False)
             st.download_button(
@@ -639,7 +736,7 @@ When you're ready, click the button below to run clustering and generate results
             )
         else:
             st.error("Clustering did not form more than one cluster or failed. Please review your data and selected parameters.")
-            st.session_state.analysis_completed = False # Reset flag if analysis not successful
+            st.session_state.analysis_completed = False
 
 # Reset Buttons and "What's Next" section
 if st.session_state.analysis_completed:
@@ -647,22 +744,15 @@ if st.session_state.analysis_completed:
     st.markdown("You can either re-run clustering with different parameters on the current dataset, or clear everything to start fresh with new data.")
     col_reset1, col_reset2 = st.columns(2)
     with col_reset1:
-        if st.button("🔄 Rerun Clustering with New Parameters"): # Renamed button for "new k and alg"
-            st.session_state.analysis_completed = False # Allow re-display of clustering options
+        if st.button("🔄 Rerun Clustering with New Parameters"):
+            st.session_state.analysis_completed = False
             st.rerun()
     with col_reset2:
-        if st.button("🗑️ Clear All Data & Start Fresh"): # New button for full reset
-            # Store the current key value before clearing the session state
+        if st.button("🗑️ Clear All Data & Start Fresh"):
             current_file_uploader_key = st.session_state.get('file_uploader_key', 0)
-            
-            st.session_state.clear() # Clear all session state variables
-
-            # Re-initialize file_uploader_key with an incremented value
-            # This must happen AFTER clearing, so it's available for the next run
+            st.session_state.clear()
             st.session_state.file_uploader_key = current_file_uploader_key + 1
-            
             st.rerun()
 else:
-    # This else block will now correctly manage the initial state or when analysis isn't complete
-    if df is None: # Only show this if no file has been uploaded yet
+    if df is None:
         st.info("Please upload a data file (.csv or .xlsx) at the top of the page to begin the analysis.")
