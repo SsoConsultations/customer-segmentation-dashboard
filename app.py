@@ -334,7 +334,7 @@ def main_app():
 
         document.add_heading('1. Analysis Overview', level=2)
         document.add_paragraph(
-            "This report details the unsupervised learning analysis performed using the Streamlit application. "
+            "This report details the unsupervised learning analysis performed using SSO CONSULTANTS APPLICATION "
             "The goal is to group similar data points based on their attributes, enabling targeted strategies."
         )
 
