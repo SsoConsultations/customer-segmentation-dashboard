@@ -445,6 +445,9 @@ This helps you see which method separates your data best.
     st.markdown("""
 You can choose the recommended option or pick any algorithm and parameters yourself.
 """)
+    # Add guidance for re-running with new parameters on the same dataset
+    st.info("💡 To re-run clustering with different parameters on the *current dataset*, simply adjust the 'Number of clusters (k)' or 'DBSCAN' settings below and click the '🚀 Run Clustering' button again.")
+
     # Set default for chosen_algo based on recommendation, if available
     default_algo_index = 0
     if recommendations and best["algorithm"] in ["KMeans", "Gaussian Mixture Model", "Agglomerative Clustering"]:
@@ -639,10 +642,10 @@ When you're ready, click the button below to run clustering and generate results
 # Reset Button and "What's Next" section
 if st.session_state.analysis_completed:
     st.header("🎯 Analysis Complete")
-    st.markdown("If you'd like to start over with a new dataset, click below.")
-    if st.button("🔄 Run New Analysis"):
+    st.markdown("If you'd like to start over with a brand new dataset and clear all previous steps, click below.")
+    if st.button("🔄 Start New Analysis (Clear All & Upload New Data)"): # Renamed button
         st.session_state.clear()
-        st.rerun() # Changed from st.experimental_rerun() to st.rerun()
+        st.rerun()
 else:
     # This else block will now correctly manage the initial state or when analysis isn't complete
     if df is None: # Only show this if no file has been uploaded yet
