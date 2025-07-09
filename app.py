@@ -547,7 +547,7 @@ def main_app():
     st.header("1️⃣ Upload Your Data")
 
     st.markdown("""
-    Upload your data file in **CSV or Excel** format. Make sure your data has columns with numeric information (like income, age) and/or categories (like gender, region).
+    Upload your data file in **CSV or Excel** format.
     """)
 
     uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"], key=f"file_uploader_{st.session_state.file_uploader_key}")
