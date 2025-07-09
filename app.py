@@ -149,8 +149,8 @@ def generate_plots(df, labels, numeric_cols, pca_components=2):
 
     # Categorical Feature Proportions
     cluster_cat_proportions = {}
-    # Filter for original categorical columns that are now in df_clustered
-    original_cat_in_df_clustered = [col for col col in df_clustered.columns if df_clustered[col].dtype == 'object' and col != 'Cluster']
+    # FIX: Corrected list comprehension syntax for original_cat_in_df_clustered
+    original_cat_in_df_clustered = [col for col in df_clustered.columns if df_clustered[col].dtype == 'object' and col != 'Cluster']
     
     for col in original_cat_in_df_clustered:
         if col in df_clustered.columns: # Redundant check but harmless
@@ -285,7 +285,7 @@ Here are the first 5 rows of your data:
     st.dataframe(df.head())
 
     all_columns = df.columns.tolist()
-    numeric_cols = [c for c c in all_columns if pd.api.types.is_numeric_dtype(df[c])]
+    numeric_cols = [c for c in all_columns if pd.api.types.is_numeric_dtype(df[c])]
     categorical_cols = [c for c in all_columns if pd.api.types.is_object_dtype(df[c])]
 
     st.markdown("""
