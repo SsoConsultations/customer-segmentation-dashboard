@@ -255,10 +255,11 @@ def main_app():
 
         return fig_pca, fig_profile_numeric, cluster_means_numeric, cluster_cat_proportions
 
-    def generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile):
+    def generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile, labels):
         summaries = {}
+        total_samples = len(original_df_for_profile)
         
-        # Calculate overall means and stds for numeric features if available
+        # Calculate overall means and stds for numeric features
         overall_means = None
         overall_stds = None
         if cluster_means_numeric is not None and not cluster_means_numeric.empty:
@@ -267,54 +268,66 @@ def main_app():
                 overall_means = original_df_for_profile[relevant_numeric_cols].mean()
                 overall_stds = original_df_for_profile[relevant_numeric_cols].std()
             
-        for cluster_id in cluster_means_numeric.index if cluster_means_numeric is not None else []:
-            summary_lines = [f"**Cluster {cluster_id}:**"]
+        for cluster_id in sorted(cluster_means_numeric.index if cluster_means_numeric is not None else []):
+            cluster_size = np.sum(labels == cluster_id) if cluster_id != -1 else np.sum(labels == -1) # Handle DBSCAN noise cluster
+            cluster_percentage = (cluster_size / total_samples) * 100
+
+            summary_lines = []
+            summary_lines.append(f"**Cluster {cluster_id}:** (N={cluster_size}, {cluster_percentage:.1f}% of total data)")
             
-            # Numeric Feature Summary
+            numeric_descriptors = []
             if overall_means is not None and not cluster_means_numeric.empty:
                 for col in cluster_means_numeric.columns:
                     cluster_mean = cluster_means_numeric.loc[cluster_id, col]
                     
-                    if col in overall_means and col in overall_stds: # Ensure column exists in overall stats
+                    if col in overall_means and col in overall_stds:
                         overall_mean = overall_means[col]
                         overall_std = overall_stds[col]
 
-                        # Check if standard deviation is not zero to avoid division by zero
                         if overall_std > 0:
                             z_score = (cluster_mean - overall_mean) / overall_std
                             
-                            if z_score > 0.75: # More than 0.75 standard deviations above average
-                                summary_lines.append(f"- Higher than average **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f}).")
-                            elif z_score < -0.75: # More than 0.75 standard deviations below average
-                                summary_lines.append(f"- Lower than average **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f}).")
-                            # Else, it's considered average - no line added for average
-                        elif cluster_mean > overall_mean: # If std is 0, but cluster mean is higher
-                            summary_lines.append(f"- Higher **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f}).")
-                        elif cluster_mean < overall_mean: # If std is 0, but cluster mean is lower
-                            summary_lines.append(f"- Lower **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f}).")
+                            if z_score > 1.0: # Significantly higher
+                                numeric_descriptors.append(f"**higher** than average **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f})")
+                            elif z_score < -1.0: # Significantly lower
+                                numeric_descriptors.append(f"**lower** than average **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f})")
+                            # For values closer to average, we don't add a specific line to keep it concise
+                        elif cluster_mean > overall_mean: # Case where std is 0 but mean is different
+                             numeric_descriptors.append(f"**higher** **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f})")
+                        elif cluster_mean < overall_mean:
+                             numeric_descriptors.append(f"**lower** **{col.replace('_', ' ').lower()}** ({cluster_mean:.2f})")
 
-
-            # Categorical Feature Summary
+            if numeric_descriptors:
+                summary_lines.append(f"- This cluster tends to have {', '.join(numeric_descriptors)}.")
+            
+            categorical_descriptors = []
             for cat_col, proportions_df in cluster_cat_proportions.items():
-                if cluster_id in proportions_df.index: # Check if cluster exists in proportions_df
-                    # Get the most dominant category for this cluster
-                    dominant_category = proportions_df.loc[cluster_id].idxmax()
-                    dominant_proportion = proportions_df.loc[cluster_id, dominant_category]
-
-                    # Get overall proportion of this dominant category
-                    overall_proportion_dominant_cat = original_df_for_profile[cat_col].value_counts(normalize=True).get(dominant_category, 0)
+                if cluster_id in proportions_df.index:
+                    cluster_proportions = proportions_df.loc[cluster_id].sort_values(ascending=False)
                     
-                    # Simple check for significant difference - if it's much higher than overall AND constitutes a significant portion of the cluster
-                    if dominant_proportion > overall_proportion_dominant_cat * 1.5 and dominant_proportion > 0.3: # 50% higher than average and at least 30% within cluster
-                        summary_lines.append(f"- Predominantly **{dominant_category}** for {cat_col.replace('_', ' ').lower()} ({dominant_proportion:.1%}).")
-                    elif dominant_proportion > 0.5: # If no significant overall comparison, just state if it's a majority
-                        summary_lines.append(f"- Primarily characterized by **{dominant_category}** for {cat_col.replace('_', ' ').lower()} ({dominant_proportion:.1%}).")
+                    for category, cluster_prop in cluster_proportions.items():
+                        overall_prop = original_df_for_profile[cat_col].value_counts(normalize=True).get(category, 0)
+                        
+                        # Only highlight if it's a significant proportion within the cluster AND significantly higher than overall
+                        if cluster_prop > 0.4 and cluster_prop > overall_prop * 1.5: # e.g., >40% of cluster and 50% more than overall
+                            categorical_descriptors.append(f"is predominantly **{category}** in terms of **{cat_col.replace('_', ' ').lower()}** ({cluster_prop:.1%})")
+                        elif cluster_prop > 0.6: # If a clear majority, even if not super high compared to overall
+                             categorical_descriptors.append(f"is largely characterized by **{category}** for **{cat_col.replace('_', ' ').lower()}** ({cluster_prop:.1%})")
+            
+            if categorical_descriptors:
+                summary_lines.append(f"- It {', and it '.join(categorical_descriptors)}.")
+
+            if not numeric_descriptors and not categorical_descriptors:
+                summary_lines.append("- This cluster does not show strong deviations from the overall average in the selected features.")
+
+            summary_lines.append("\n**Potential Persona/Implications:** *[Consider giving this cluster a descriptive name like 'High-Value Customers' or 'New Engagers' based on its characteristics. Think about what these features mean for your business strategies.]*")
 
             summaries[cluster_id] = "\n".join(summary_lines)
         return summaries
 
+
     # Re-integrated create_report function
-    def create_report(document, algorithm, params, metrics, data_preview_df, pca_plot_bytes, profile_plot_bytes, cluster_means_numeric, cluster_cat_proportions, original_df_for_profile):
+    def create_report(document, algorithm, params, metrics, data_preview_df, pca_plot_bytes, profile_plot_bytes, cluster_means_numeric, cluster_cat_proportions, original_df_for_profile, labels):
         """Generates a comprehensive Word document report."""
         
         # --- Add logo to report ---
@@ -334,7 +347,7 @@ def main_app():
 
         document.add_heading('1. Analysis Overview', level=2)
         document.add_paragraph(
-            "This report details the unsupervised learning analysis performed using SSO CONSULTANTS APPLICATION "
+            "This report details the unsupervised learning analysis performed using the Streamlit application. "
             "The goal is to group similar data points based on their attributes, enabling targeted strategies."
         )
 
@@ -385,7 +398,7 @@ def main_app():
         document.add_heading('6. Cluster Profiles', level=2)
         
         document.add_paragraph("Average values of numeric features for each cluster:")
-        if not cluster_means_numeric.empty if cluster_means_numeric is not None else False:
+        if not (cluster_means_numeric.empty if cluster_means_numeric is not None else True):
             table_numeric = document.add_table(rows=1, cols=cluster_means_numeric.shape[1] + 1)
             table_numeric.style = 'Table Grid'
             hdr_cells_numeric = table_numeric.rows[0].cells
@@ -421,12 +434,26 @@ def main_app():
 
         # New Section: Cluster Summaries
         document.add_heading('7. Cluster Summaries and Characteristics', level=2)
-        if cluster_means_numeric is not None and not cluster_means_numeric.empty and cluster_cat_proportions is not None:
-            cluster_summaries = generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile)
+        document.add_paragraph(
+            "Below is a detailed profile for each identified cluster, highlighting their key distinguishing features "
+            "compared to the overall dataset. This can help you understand the unique characteristics of each segment "
+            "and develop targeted strategies."
+        )
+
+        if not (cluster_means_numeric.empty if cluster_means_numeric is not None else True) and cluster_cat_proportions is not None:
+            # Pass labels to generate_cluster_summaries for cluster size calculation
+            cluster_summaries = generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile, labels)
             if cluster_summaries:
                 for cluster_id in sorted(cluster_summaries.keys()):
-                    document.add_paragraph(cluster_summaries[cluster_id])
-                    document.add_paragraph() # Add a blank line for separation
+                    # Add new paragraph to document
+                    doc_paragraph = document.add_paragraph()
+                    # Add content with bolding for cluster ID and percentage
+                    run = doc_paragraph.add_run(cluster_summaries[cluster_id])
+                    # Apply bolding for "Cluster X:" and the percentage within the run text
+                    # This requires more fine-grained control, which is hard with plain string.
+                    # For a simple markdown-like bolding, the current approach works for `**text**`.
+                    # To apply docx bolding directly:
+                    doc_paragraph.paragraph_format.space_after = Pt(12) # Add some spacing after each summary
             else:
                 document.add_paragraph("Unable to generate detailed cluster summaries.")
         else:
@@ -799,7 +826,7 @@ def main_app():
                         st.info("Numeric cluster profile plot could not be generated.")
 
                 st.subheader("Numeric Feature Means per Cluster")
-                if not cluster_means_numeric.empty if cluster_means_numeric is not None else False:
+                if not (cluster_means_numeric.empty if cluster_means_numeric is not None else True):
                     st.dataframe(cluster_means_numeric.round(2))
                 else:
                     st.info("No numeric cluster means to display (check selected features).")
@@ -845,7 +872,8 @@ def main_app():
                     profile_plot_bytes.getvalue() if profile_plot_bytes else None,
                     cluster_means_numeric,
                     cluster_cat_proportions,
-                    df_profile # Pass original df_profile without labels for overall stats
+                    df_profile, # Pass original df_profile without labels for overall stats
+                    labels # Pass labels here for cluster size calculation in report
                 )
                 document.save(report_bytes_io)
                 report_bytes = report_bytes_io.getvalue()
