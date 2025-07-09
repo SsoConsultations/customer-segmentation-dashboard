@@ -10,7 +10,6 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_har
 from sklearn.decomposition import PCA
 from docx import Document
 from docx.shared import Inches, Pt
-# Added missing imports for docx formatting
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_SECTION
 from docx.oxml.ns import qn
@@ -217,7 +216,7 @@ def create_report(document, algorithm, params, metrics, data_preview_df, pca_plo
     document.add_heading('6. Cluster Profiles', level=2)
     
     document.add_paragraph("Average values of numeric features for each cluster:")
-    if not cluster_means_numeric.empty:
+    if not cluster_means_numeric.empty if cluster_means_numeric is not None else False:
         table_numeric = document.add_table(rows=1, cols=cluster_means_numeric.shape[1] + 1)
         table_numeric.style = 'Table Grid'
         hdr_cells_numeric = table_numeric.rows[0].cells
@@ -564,20 +563,24 @@ When you're ready, click the button below to run clustering and generate results
             else:
                 st.info("No numeric cluster means to display (check selected features).")
 
-            if cluster_cat_proportions:
-                st.subheader("Categorical Feature Distributions per Cluster")
-                for cat in selected_categorical: # Iterate through selected categorical
-                    if cat in df_profile.columns: # Check if column exists in df_profile
-                        prop_df = pd.crosstab(df_profile["Cluster"], df_profile[cat], normalize="index")
-                        st.markdown(f"**{cat}:**")
-                        st.dataframe((prop_df * 100).round(1))
-            else:
-                st.info("No categorical cluster proportions to display (check selected features).")
-
             # Add Cluster column to original DataFrame subset
             df_clustered_output = df_profile.copy()
-            df_clustered_output['Cluster'] = labels
-            
+            df_clustered_output['Cluster'] = labels # Ensure 'Cluster' column is added here
+
+            if selected_categorical: # Check if there are any categorical features selected
+                st.subheader("Categorical Feature Distributions per Cluster")
+                for cat in selected_categorical: # Iterate through selected categorical
+                    # FIX: Use df_clustered_output instead of df_profile for crosstab
+                    if cat in df_clustered_output.columns: # Check if column exists in df_clustered_output
+                        prop_df = pd.crosstab(df_clustered_output["Cluster"], df_clustered_output[cat], normalize="index")
+                        st.markdown(f"**{cat}:**")
+                        st.dataframe((prop_df * 100).round(1))
+                    else:
+                        st.warning(f"Categorical column '{cat}' not found in clustered data for distribution plot.")
+            else:
+                st.info("No categorical cluster proportions to display (no categorical features selected).")
+
+
             st.subheader("7️⃣ Download Results")
             st.info("You can download the clustered data or a full report summarizing the analysis.")
 
