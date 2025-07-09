@@ -642,7 +642,7 @@ if st.session_state.analysis_completed:
     st.markdown("If you'd like to start over with a new dataset, click below.")
     if st.button("🔄 Run New Analysis"):
         st.session_state.clear()
-        st.experimental_rerun()
+        st.rerun() # Changed from st.experimental_rerun() to st.rerun()
 else:
     # This else block will now correctly manage the initial state or when analysis isn't complete
     if df is None: # Only show this if no file has been uploaded yet
