@@ -678,6 +678,6 @@ if st.session_state.clustering_done:
     st.info("You've completed the current analysis. Would you like to download your results or start a new analysis?")
     if st.button("Run New Analysis"):
         reset_app()
-else:
+else: # Debugging marker: v240709-1
     if not st.session_state.data_uploaded:
         st.info("Please upload a data file (.csv or .xlsx) at the top of the page to begin the analysis.")
