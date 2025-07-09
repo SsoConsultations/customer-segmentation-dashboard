@@ -23,6 +23,8 @@ warnings.filterwarnings("ignore")
 # Session state for resetting app
 if "analysis_completed" not in st.session_state:
     st.session_state.analysis_completed = False
+if "file_uploader_key" not in st.session_state:
+    st.session_state.file_uploader_key = 0
 
 # Page config
 st.set_page_config(
@@ -260,7 +262,7 @@ st.markdown("""
 Upload your data file in **CSV or Excel** format. Make sure your data has columns with numeric information (like income, age) and/or categories (like gender, region).
 """)
 
-uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"], key=f"file_uploader_{st.session_state.file_uploader_key}")
 
 df = None
 if uploaded_file:
@@ -639,13 +641,20 @@ When you're ready, click the button below to run clustering and generate results
             st.error("Clustering did not form more than one cluster or failed. Please review your data and selected parameters.")
             st.session_state.analysis_completed = False # Reset flag if analysis not successful
 
-# Reset Button and "What's Next" section
+# Reset Buttons and "What's Next" section
 if st.session_state.analysis_completed:
     st.header("🎯 Analysis Complete")
-    st.markdown("If you'd like to start over with a brand new dataset and clear all previous steps, click below.")
-    if st.button("🔄 Start New Analysis (Clear All & Upload New Data)"): # Renamed button
-        st.session_state.clear()
-        st.rerun()
+    st.markdown("You can either re-run clustering with different parameters on the current dataset, or clear everything to start fresh with new data.")
+    col_reset1, col_reset2 = st.columns(2)
+    with col_reset1:
+        if st.button("🔄 Rerun Clustering with New Parameters"): # Renamed button for "new k and alg"
+            st.session_state.analysis_completed = False # Allow re-display of clustering options
+            st.rerun()
+    with col_reset2:
+        if st.button("🗑️ Clear All Data & Start Fresh"): # New button for full reset
+            st.session_state.clear()
+            st.session_state.file_uploader_key += 1 # Increment key to reset file uploader
+            st.rerun()
 else:
     # This else block will now correctly manage the initial state or when analysis isn't complete
     if df is None: # Only show this if no file has been uploaded yet
