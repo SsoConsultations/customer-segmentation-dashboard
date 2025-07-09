@@ -16,6 +16,7 @@ from docx.oxml.ns import qn
 import io
 import os
 import warnings
+from PIL import Image # For loading image
 
 # Suppress warnings for cleaner app output
 warnings.filterwarnings("ignore")
@@ -31,24 +32,25 @@ if "authenticated" not in st.session_state:
 # Page config
 st.set_page_config(
     layout="wide",
-    page_title="Interactive Customer Segmentation Dashboard"
+    page_title="Unsupervised Learning (using Machine Learning)" # Updated title
 )
 
 # --- Authentication Logic ---
 def login_page():
-    st.title("🔒 Login to Customer Segmentation Dashboard")
+    # Attempt to load logo for login page
+    try:
+        logo = Image.open("SsoLogo.jpg")
+        st.image(logo, width=150) # Adjust width as needed
+    except FileNotFoundError:
+        st.warning("SsoLogo.jpg not found. Please ensure it's in the repository.")
+
+    st.title("🔒 Login to Unsupervised Learning Dashboard") # Updated login title
     st.markdown("Please enter your credentials to access the application.")
 
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        # Retrieve credentials from Streamlit secrets
-        # IMPORTANT: Ensure 'username' and 'password' are set in Streamlit Cloud secrets
-        # Example in Streamlit Cloud:
-        # username="your_chosen_username"
-        # password="your_chosen_password"
-        
         try:
             correct_username = st.secrets["username"]
             correct_password = st.secrets["password"]
@@ -65,7 +67,15 @@ def login_page():
 
 # --- Main Application Content ---
 def main_app():
-    st.title("📊 Customer Segmentation Dashboard")
+    # --- Logo in Sidebar ---
+    st.sidebar.title(" ") # Small space before logo
+    try:
+        logo = Image.open("SsoLogo.jpg")
+        st.sidebar.image(logo, use_column_width=True) # Use column_width for responsiveness
+    except FileNotFoundError:
+        st.sidebar.warning("SsoLogo.jpg not found. Please ensure it's in the repository.")
+
+    st.title("📊 Unsupervised Learning (using Machine Learning)") # Main heading updated
 
     st.markdown("""
     Welcome! This app helps you discover customer segments using unsupervised machine learning.
@@ -307,13 +317,26 @@ def main_app():
     # Re-integrated create_report function
     def create_report(document, algorithm, params, metrics, data_preview_df, pca_plot_bytes, profile_plot_bytes, cluster_means_numeric, cluster_cat_proportions, original_df_for_profile):
         """Generates a comprehensive Word document report."""
-        document.add_heading('Customer Segmentation Report', level=1)
+        
+        # --- Add logo to report ---
+        try:
+            logo = Image.open("SsoLogo.jpg")
+            logo_stream = io.BytesIO()
+            logo.save(logo_stream, format="PNG")
+            logo_stream.seek(0)
+            document.add_picture(logo_stream, width=Inches(1.5)) # Adjust width as needed
+            last_paragraph = document.paragraphs[-1] 
+            last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER # Center the logo
+        except FileNotFoundError:
+            document.add_paragraph("Logo (SsoLogo.jpg) not found for report.")
+        
+        document.add_heading('ML Analysis Report', level=1) # Report title updated
         document.add_paragraph(f"Report generated on: {pd.to_datetime('today').strftime('%Y-%m-%d %H:%M:%S')}")
 
         document.add_heading('1. Analysis Overview', level=2)
         document.add_paragraph(
-            "This report details the customer segmentation analysis performed using the Streamlit application. "
-            "The goal is to group similar customers based on their attributes, enabling targeted strategies."
+            "This report details the unsupervised learning analysis performed using the Streamlit application. "
+            "The goal is to group similar data points based on their attributes, enabling targeted strategies."
         )
 
         document.add_heading('2. Clustering Parameters', level=2)
@@ -516,13 +539,13 @@ def main_app():
     - **70% Train** means 70% of the data will be used to create clusters.
     - **30% Test** will be used to validate the results.
 
-    If you're not sure, leave this at **0** to use all data.
-    """)
+    If you're not sure, leave it to **30%** for the test set (meaning 70% for training).
+    """) # Updated text
         train_ratio = st.slider(
             "Train-Test Split Ratio",
             min_value=0.0,
             max_value=0.9,
-            value=0.0,
+            value=0.7, # Default changed to 0.7 (70% train, 30% test)
             step=0.1
         )
 
@@ -652,7 +675,7 @@ def main_app():
                 f"**Recommended:** {best['algorithm']} with {best['k']} clusters "
                 f"(Silhouette Score: {format_metric(best['silhouette'])}, "
                 f"Davies-Bouldin: {format_metric(best['davies'])}, "
-                f"Calinski-Harabasz: {format_metric(best['calinski'])})"
+                f"Calinski-Harabasz: {format_metric(best['calinski'])}"
             )
         else:
             st.info("No clear model recommendation could be made (e.g., all scores were NaN or no valid clusters formed).")
@@ -832,7 +855,7 @@ def main_app():
                 st.download_button(
                     label="📥 Download Comprehensive Report (.docx)",
                     data=report_bytes,
-                    file_name=f"Customer_Segmentation_Report_{pd.to_datetime('today').strftime('%Y%m%d_%H%M%S')}.docx",
+                    file_name=f"ML_Analysis_Report_{pd.to_datetime('today').strftime('%Y%m%d_%H%M%S')}.docx", # Report filename updated
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
 
