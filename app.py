@@ -264,36 +264,32 @@ def main_app():
     # Modified generate_cluster_summaries to return structured data
     def generate_cluster_summaries(cluster_means_numeric, cluster_cat_proportions, original_df_for_profile, labels, chosen_algo):
         structured_summaries = {}
-        total_samples = len(original_df_for_profile)
-        
+        total_samples = len(original_df_for_profile) # This is the original *processed* df size
+
         # Calculate overall means and stds for numeric features
         overall_means = None
         overall_stds = None
         if cluster_means_numeric is not None and not cluster_means_numeric.empty:
+            # Ensure we're only looking at numeric columns that were actually clustered
             relevant_numeric_cols = [col for col in cluster_means_numeric.columns if col in original_df_for_profile.columns]
             if relevant_numeric_cols:
                 overall_means = original_df_for_profile[relevant_numeric_cols].mean()
                 overall_stds = original_df_for_profile[relevant_numeric_cols].std()
-            
-        # Get counts for each cluster from the labels array
+
+        # Get counts for each cluster directly from the labels array
         unique_labels, counts = np.unique(labels, return_counts=True)
         label_counts = dict(zip(unique_labels, counts))
 
-        # Sort cluster IDs numerically for consistent report order
-        # Ensure index is treated as integers for correct sorting and lookup
-        # Filter out NaN/None from cluster_means_numeric.index before converting to int
-        valid_cluster_ids = [idx for idx in cluster_means_numeric.index if pd.notna(idx)] if cluster_means_numeric is not None else []
-        sorted_cluster_ids = sorted([int(x) for x in valid_cluster_ids])
-        
-        for cluster_id_int in sorted_cluster_ids:
-            cluster_id_str = str(cluster_id_int) # Keep string for dictionary key if that's how it's currently stored
+        # Get all unique cluster IDs from the labels, including -1 for DBSCAN if present
+        all_cluster_ids = sorted([c_id for c_id in np.unique(labels) if pd.notna(c_id)]) # Filter out potential NaNs if any
 
+        for cluster_id_int in all_cluster_ids:
             cluster_size = label_counts.get(cluster_id_int, 0)
-            
+
             # Special handling for DBSCAN's noise cluster (-1)
             if chosen_algo == "DBSCAN" and cluster_id_int == -1:
                  if cluster_size == 0: continue # If no noise points, skip
-                 structured_summaries[cluster_id_str] = {
+                 structured_summaries[str(cluster_id_int)] = { # Use string key for consistency with potentially mixed dict keys later
                      "cluster_heading": f"Noise Points (DBSCAN): (N={cluster_size}, {(cluster_size / total_samples) * 100:.1f}% of total data)",
                      "numeric_characteristics": [],
                      "categorical_characteristics": [],
@@ -302,31 +298,20 @@ def main_app():
                  continue # Move to next cluster_id
 
             cluster_percentage = (cluster_size / total_samples) * 100
-            
-            # Handle cases where a cluster might exist in labels but not in cluster_means_numeric (e.g., if df_profile.empty for that cluster)
-            if cluster_id_str not in (cluster_means_numeric.index if cluster_means_numeric is not None else []):
-                # This could happen if a cluster has 0 members in the filtered/processed df_profile
-                structured_summaries[cluster_id_str] = {
-                    "cluster_heading": f"Cluster {cluster_id_int}: (N={cluster_size}, {cluster_percentage:.1f}% of total data)",
-                    "numeric_characteristics": [],
-                    "categorical_characteristics": [],
-                    "persona_implications": "This cluster has 0 members after data processing and therefore no characteristics to display."
-                }
-                continue # Move to next cluster_id
-
 
             numeric_descriptors = []
-            if overall_means is not None and not cluster_means_numeric.empty:
+            # Check if cluster_id_int is in the index of cluster_means_numeric before accessing
+            if cluster_means_numeric is not None and cluster_id_int in cluster_means_numeric.index:
                 for col in cluster_means_numeric.columns:
-                    cluster_mean = cluster_means_numeric.loc[cluster_id_str, col] 
-                    
-                    if col in overall_means and col in overall_stds:
+                    cluster_mean = cluster_means_numeric.loc[cluster_id_int, col] # Access by integer index
+
+                    if overall_means is not None and col in overall_means and col in overall_stds:
                         overall_mean = overall_means[col]
                         overall_std = overall_stds[col]
 
                         if overall_std > 0:
                             z_score = (cluster_mean - overall_mean) / overall_std
-                            
+
                             if z_score > 1.2: # Stricter threshold for 'significantly higher'
                                 numeric_descriptors.append(f"Higher {col.replace('_', ' ').title()}: Averaging {cluster_mean:.2f} (significantly above overall average of {overall_mean:.2f}).")
                             elif z_score < -1.2: # Stricter threshold for 'significantly lower'
@@ -338,24 +323,24 @@ def main_app():
 
             categorical_descriptors = []
             for cat_col, proportions_df in cluster_cat_proportions.items():
-                if cluster_id_str in proportions_df.index: # Access by string index as proportions_df.index could be strings
-                    cluster_proportions = proportions_df.loc[cluster_id_str].sort_values(ascending=False)
-                    
+                if cluster_id_int in proportions_df.index: # Access by integer index
+                    cluster_proportions = proportions_df.loc[cluster_id_int].sort_values(ascending=False)
+
                     for category, cluster_prop in cluster_proportions.items():
                         if cluster_prop == 0: continue # Skip categories with 0 proportion
                         overall_prop = original_df_for_profile[cat_col].value_counts(normalize=True).get(category, 0)
-                        
+
                         if cluster_prop > 0.3 and cluster_prop > overall_prop * 1.5:
                             categorical_descriptors.append(f"Predominantly {category} (for {cat_col.replace('_', ' ').title()}): {cluster_prop:.1%} of this cluster falls into this category, which is significantly higher than the overall average ({overall_prop:.1%}).")
                         elif cluster_prop > 0.6:
                              categorical_descriptors.append(f"Majorly {category} (for {cat_col.replace('_', ' ').title()}): This category constitutes {cluster_prop:.1%} of the cluster.")
-            
+
             persona_text = "Potential Persona/Implications: *[Consider giving this cluster a descriptive name like 'High-Value Customers' or 'New Engagers' based on its characteristics. Think about what these features mean for your business strategies.]*"
 
             if not numeric_descriptors and not categorical_descriptors:
                 persona_text = "This cluster does not show strong deviations from the overall average in the selected features and may represent an 'average' segment. " + persona_text
 
-            structured_summaries[cluster_id_str] = {
+            structured_summaries[str(cluster_id_int)] = { # Use string key for the output dictionary
                 "cluster_heading": f"Cluster {cluster_id_int}: (N={cluster_size}, {cluster_percentage:.1f}% of total data)",
                 "numeric_characteristics": numeric_descriptors,
                 "categorical_characteristics": categorical_descriptors,
@@ -937,19 +922,15 @@ def main_app():
                     st.subheader("Categorical Feature Distributions per Cluster")
                     for cat in selected_categorical:
                         # Use df_profile_with_labels for calculating proportions to ensure consistency
-                        if cat in df_profile_with_labels.columns:
-                            # Filter out noise points for categorical proportions if DBSCAN
-                            temp_df_for_cat_prop = df_profile_with_labels[df_profile_with_labels['Cluster'] != -1] if chosen_algo == "DBSCAN" else df_profile_with_labels
-                            
-                            # Only calculate if there are actual clusters remaining after filtering (if any)
-                            if not temp_df_for_cat_prop.empty and len(np.unique(temp_df_for_cat_prop['Cluster'])) > 0:
-                                prop_df = pd.crosstab(temp_df_for_cat_prop["Cluster"], temp_df_for_cat_prop[cat], normalize="index")
-                                st.markdown(f"**{cat}:**")
-                                st.dataframe((prop_df * 100).round(1))
-                            else:
-                                st.info(f"No valid clusters to display categorical proportions for '{cat}' after filtering noise (if any).")
+                        temp_df_for_cat_prop = df_profile_with_labels[df_profile_with_labels['Cluster'] != -1] if chosen_algo == "DBSCAN" else df_profile_with_labels
+                        
+                        # Only calculate if there are actual clusters remaining after filtering (if any)
+                        if not temp_df_for_cat_prop.empty and len(np.unique(temp_df_for_cat_prop['Cluster'])) > 0:
+                            prop_df = pd.crosstab(temp_df_for_cat_prop["Cluster"], temp_df_for_cat_prop[cat], normalize="index")
+                            st.markdown(f"**{cat}:**")
+                            st.dataframe((prop_df * 100).round(1))
                         else:
-                            st.warning(f"Categorical column '{cat}' not found in clustered data for distribution plot.")
+                            st.info(f"No valid clusters to display categorical proportions for '{cat}' after filtering noise (if any).")
                 else:
                     st.info("No categorical cluster proportions to display (no categorical features selected).")
 
