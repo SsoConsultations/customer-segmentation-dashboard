@@ -1021,6 +1021,11 @@ def main_app():
         if df is None:
             st.info("Please upload a data file (.csv or .xlsx) at the top of the page to begin the analysis.")
 
+    # --- Copyright Notice ---
+    st.markdown("---") # Optional: add a separator line
+    st.markdown("<p style='text-align: center; color: grey;'>© Copyright SSO Consultants</p>", unsafe_allow_html=True)
+
+
 # --- Run the appropriate page based on authentication status ---
 if not st.session_state.authenticated:
     login_page()
