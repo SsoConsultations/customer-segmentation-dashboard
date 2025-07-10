@@ -65,6 +65,11 @@ def login_page():
         else:
             st.error("Invalid username or password.")
 
+    # --- Copyright Notice for Login Page ---
+    st.markdown("---") # Optional: add a separator line
+    st.markdown("<p style='text-align: center; color: grey;'>© Copyright SSO Consultants</p>", unsafe_allow_html=True)
+
+
 # --- Main Application Content ---
 def main_app():
     # --- Logo in Sidebar ---
@@ -703,7 +708,7 @@ def main_app():
     """)
 
         # Plot Elbow Method (KMeans) and AIC/BIC (GMM)
-        st.subheader("Elbow Method (K-Means) and AIC/BIC (GMM)")
+        st.subheader("Elbow Method (K-Means) and Information Criteria (GMM)")
         fig_elbow, ax_elbow = plt.subplots(figsize=(10, 6))
         
         # KMeans Inertia
@@ -1021,7 +1026,7 @@ def main_app():
         if df is None:
             st.info("Please upload a data file (.csv or .xlsx) at the top of the page to begin the analysis.")
 
-    # --- Copyright Notice ---
+    # --- Copyright Notice for Main App ---
     st.markdown("---") # Optional: add a separator line
     st.markdown("<p style='text-align: center; color: grey;'>© Copyright SSO Consultants</p>", unsafe_allow_html=True)
 
