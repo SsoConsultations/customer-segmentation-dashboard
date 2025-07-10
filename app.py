@@ -1001,9 +1001,21 @@ def main_app():
                 st.rerun()
         with col_reset2:
             if st.button("🗑️ Clear All Data & Start Fresh"):
+                # Preserve 'authenticated' state, clear others
+                auth_status = st.session_state.get('authenticated', False)
+                
+                # Increment file_uploader_key for a fresh file uploader widget
                 current_file_uploader_key = st.session_state.get('file_uploader_key', 0)
-                st.session_state.clear()
+                
+                # Clear all session state items EXCEPT 'authenticated'
+                for key in list(st.session_state.keys()):
+                    if key != 'authenticated':
+                        del st.session_state[key]
+                
+                # Re-set 'authenticated' and update file_uploader_key
+                st.session_state.authenticated = auth_status
                 st.session_state.file_uploader_key = current_file_uploader_key + 1
+                
                 st.rerun()
     else:
         if df is None:
