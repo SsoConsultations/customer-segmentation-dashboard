@@ -47,18 +47,29 @@ def login_page():
     st.title("🔒 Login to Unsupervised Learning Dashboard") # Updated login title
     st.markdown("Please enter your credentials to access the application.")
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    username_input = st.text_input("Username")
+    password_input = st.text_input("Password", type="password")
 
     if st.button("Login"):
         try:
-            correct_username = st.secrets["username"]
-            correct_password = st.secrets["password"]
+            # Retrieve the list of valid users from secrets
+            # st.secrets["users"] is expected to be a list of dictionaries like:
+            # [
+            #     {"username": "user1", "password": "password1"},
+            #     {"username": "user2", "password": "password2"}
+            # ]
+            valid_users = st.secrets["users"]
         except KeyError:
-            st.error("Secrets not configured! Please set 'username' and 'password' in Streamlit Cloud secrets.")
+            st.error("Secrets not configured correctly! Please set 'users' as a list of username/password dictionaries in Streamlit Cloud secrets or secrets.toml.")
             return
 
-        if username == correct_username and password == correct_password:
+        authenticated = False
+        for user_data in valid_users:
+            if username_input == user_data["username"] and password_input == user_data["password"]:
+                authenticated = True
+                break # Exit loop once a match is found
+
+        if authenticated:
             st.session_state.authenticated = True
             st.success("Login successful! Redirecting...")
             st.rerun() # Rerun to switch to the main app content
@@ -70,9 +81,17 @@ def login_page():
     st.markdown("<p style='text-align: center; color: grey;'>© Copyright SSO Consultants</p>", unsafe_allow_html=True)
 
 
-# --- Main Application Content ---
+# --- Main Application Content (rest of your app.py code remains the same) ---
 def main_app():
-    # --- Logo in Sidebar ---
+    # ... (your existing main_app code goes here, from the logo in sidebar onwards)
+    # This part of the code is unchanged from your previous app (20).py file.
+    # It starts with:
+    # st.sidebar.title(" ")
+    # try:
+    #     logo = Image.open("SsoLogo.jpg")
+    #     st.sidebar.image(logo, use_container_width=True)
+    # ... and continues to the end of the file.
+
     st.sidebar.title(" ") # Small space before logo
     try:
         logo = Image.open("SsoLogo.jpg")
@@ -314,16 +333,16 @@ def main_app():
                         overall_mean = overall_means[col]
                         overall_std = overall_stds[col]
 
-                        if overall_std > 0:
+                        if overall_std > 1e-9: # Avoid division by zero for std dev
                             z_score = (cluster_mean - overall_mean) / overall_std
 
                             if z_score > 1.2: # Stricter threshold for 'significantly higher'
                                 numeric_descriptors.append(f"Higher {col.replace('_', ' ').title()}: Averaging {cluster_mean:.2f} (significantly above overall average of {overall_mean:.2f}).")
                             elif z_score < -1.2: # Stricter threshold for 'significantly lower'
                                 numeric_descriptors.append(f"Lower {col.replace('_', ' ').title()}: Averaging {cluster_mean:.2f} (significantly below overall average of {overall_mean:.2f}).")
-                        elif cluster_mean > overall_mean and overall_std == 0: # If std is 0, but cluster mean is higher
+                        elif cluster_mean > overall_mean: # If std is 0, but cluster mean is higher
                             numeric_descriptors.append(f"Higher {col.replace('_', ' ').title()}: Averaging {cluster_mean:.2f}.")
-                        elif cluster_mean < overall_mean and overall_std == 0: # If std is 0, but cluster mean is lower
+                        elif cluster_mean < overall_mean: # If std is 0, but cluster mean is lower
                             numeric_descriptors.append(f"Lower {col.replace('_', ' ').title()}: Averaging {cluster_mean:.2f}.")
 
             categorical_descriptors = []
