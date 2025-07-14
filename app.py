@@ -53,11 +53,6 @@ def login_page():
     if st.button("Login"):
         try:
             # Retrieve the list of valid users from secrets
-            # st.secrets["users"] is expected to be a list of dictionaries like:
-            # [
-            #     {"username": "user1", "password": "password1"},
-            #     {"username": "user2", "password": "password2"}
-            # ]
             valid_users = st.secrets["users"]
         except KeyError:
             st.error("Secrets not configured correctly! Please set 'users' as a list of username/password dictionaries in Streamlit Cloud secrets or secrets.toml.")
@@ -83,19 +78,9 @@ def login_page():
 
 # --- Main Application Content (rest of your app.py code remains the same) ---
 def main_app():
-    # ... (your existing main_app code goes here, from the logo in sidebar onwards)
-    # This part of the code is unchanged from your previous app (20).py file.
-    # It starts with:
-    # st.sidebar.title(" ")
-    # try:
-    #     logo = Image.open("SsoLogo.jpg")
-    #     st.sidebar.image(logo, use_container_width=True)
-    # ... and continues to the end of the file.
-
     st.sidebar.title(" ") # Small space before logo
     try:
         logo = Image.open("SsoLogo.jpg")
-        # FIX: Replace use_column_width with use_container_width
         st.sidebar.image(logo, use_container_width=True) # Use container_width for responsiveness
     except FileNotFoundError:
         st.sidebar.warning("SsoLogo.jpg not found. Please ensure it's in the repository.")
@@ -144,36 +129,76 @@ def main_app():
                     continue
         return list(set(potential_ids)) # Use set to remove duplicates
 
+    # Modified preprocess_data function to include apply_advanced_preprocessing flag
     @st.cache_data
-    def preprocess_data(df, numeric, categorical, missing):
+    def preprocess_data(df, numeric_cols, categorical_cols, missing_strategy, apply_advanced_preprocessing):
         # Ensure only selected features are passed for preprocessing
-        df_proc = df[numeric + categorical].copy()
-        
-        if missing == "drop_rows":
+        df_proc = df[numeric_cols + categorical_cols].copy()
+
+        # Convert numeric-like strings to actual numbers (always happens for selected numeric cols)
+        for col in numeric_cols:
+            df_proc[col] = pd.to_numeric(df_proc[col], errors='coerce') # Coerce errors ensures non-numeric become NaN
+
+        # Missing Value Handling (always happens)
+        if missing_strategy == "drop_rows":
             df_proc.dropna(inplace=True)
-        else:
-            for col in numeric:
-                df_proc[col].fillna(df_proc[col].mean(), inplace=True)
-            for col in categorical:
-                df_proc[col].fillna(df_proc[col].mode()[0], inplace=True)
-        
-        # Store df_for_profile before one-hot encoding for accurate profile generation
-        # It should include original numeric and categorical columns
+        else: # impute
+            for col in numeric_cols:
+                if col in df_proc.columns: # Ensure column still exists after potential dropna
+                    df_proc[col].fillna(df_proc[col].mean(), inplace=True)
+            for col in categorical_cols:
+                if col in df_proc.columns: # Ensure column still exists after potential dropna
+                    df_proc[col].fillna(df_proc[col].mode()[0], inplace=True)
+
+        # df_for_profile should be the cleaned data (missing values handled, numeric converted)
+        # but BEFORE scaling or one-hot encoding, as it's used for human-readable profiles.
         df_for_profile = df_proc.copy()
 
-        encoded_features = []
-        if categorical:
-            encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-            enc_data = encoder.fit_transform(df_proc[categorical])
-            enc_df = pd.DataFrame(enc_data, columns=encoder.get_feature_names_out(categorical), index=df_proc.index)
-            df_proc.drop(columns=categorical, inplace=True)
-            df_proc = pd.concat([df_proc, enc_df], axis=1)
-            encoded_features = encoder.get_feature_names_out(categorical).tolist()
+        # Dataframe for clustering - starts with the cleaned data
+        df_for_clustering = df_proc.copy()
+        
+        encoded_features = [] # To store names of newly created OHE columns
 
-        scaler = StandardScaler()
-        scaled = scaler.fit_transform(df_proc)
-        scaled_df = pd.DataFrame(scaled, columns=df_proc.columns, index=df_proc.index)
-        return scaled_df, df_for_profile
+        # Advanced Preprocessing (Conditional: Scaling and One-Hot Encoding)
+        if apply_advanced_preprocessing:
+            if categorical_cols:
+                encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+                # Ensure we only apply OHE to columns that exist in df_for_clustering after cleaning
+                current_categorical_cols = [col for col in categorical_cols if col in df_for_clustering.columns]
+                if current_categorical_cols:
+                    enc_data = encoder.fit_transform(df_for_clustering[current_categorical_cols])
+                    enc_df = pd.DataFrame(enc_data, columns=encoder.get_feature_names_out(current_categorical_cols), index=df_for_clustering.index)
+                    df_for_clustering.drop(columns=current_categorical_cols, inplace=True)
+                    df_for_clustering = pd.concat([df_for_clustering, enc_df], axis=1)
+                    encoded_features = encoder.get_feature_names_out(current_categorical_cols).tolist()
+
+            if numeric_cols: # Only scale if there are numeric columns
+                scaler = StandardScaler()
+                # Identify which columns are truly numeric after potential OHE
+                cols_to_scale = [col for col in numeric_cols if col in df_for_clustering.columns]
+                if cols_to_scale:
+                    scaled = scaler.fit_transform(df_for_clustering[cols_to_scale])
+                    df_for_clustering[cols_to_scale] = scaled
+        else: # If not applying advanced preprocessing, but still need to handle categoricals for clustering algorithms
+            # Important: Clustering algorithms like KMeans, GMM, Agglomerative *require* numeric input.
+            # If the user chooses NOT to apply advanced preprocessing, but has selected categorical columns,
+            # we must still one-hot encode them, or the clustering step will fail.
+            # This is a critical design choice to prevent runtime errors.
+            if categorical_cols:
+                st.warning("You opted not to apply advanced preprocessing. However, clustering algorithms like KMeans, GMM, and Agglomerative Clustering require numeric input. Therefore, **categorical features will still be One-Hot Encoded** to enable clustering. Numeric features will *not* be scaled.")
+                encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+                current_categorical_cols = [col for col in categorical_cols if col in df_for_clustering.columns]
+                if current_categorical_cols:
+                    enc_data = encoder.fit_transform(df_for_clustering[current_categorical_cols])
+                    enc_df = pd.DataFrame(enc_data, columns=encoder.get_feature_names_out(current_categorical_cols), index=df_for_clustering.index)
+                    df_for_clustering.drop(columns=current_categorical_cols, inplace=True)
+                    df_for_clustering = pd.concat([df_for_clustering, enc_df], axis=1)
+                    encoded_features = encoder.get_feature_names_out(current_categorical_cols).tolist()
+            else:
+                st.info("You opted not to apply advanced preprocessing. Numeric features will be used as-is (after basic cleaning). No categorical features were selected for encoding.")
+
+
+        return df_for_clustering, df_for_profile
 
     @st.cache_data
     def evaluate_models(scaled_df, k_range):
@@ -613,7 +638,6 @@ def main_app():
         st.subheader("Select Numeric Features")
         st.markdown("""
     **Numeric Features:** Columns with numbers, like income, age, or transaction counts.  
-    These will be standardized so that all values are on the same scale.
     """)
         selected_numeric = st.multiselect(
             "Numeric Columns",
@@ -624,7 +648,6 @@ def main_app():
         st.subheader("Select Categorical Features")
         st.markdown("""
     **Categorical Features:** Columns with categories, like gender, product type, or region.  
-    These will be automatically converted into numeric format.
     """)
         selected_categorical = st.multiselect(
             "Categorical Columns",
@@ -643,6 +666,20 @@ def main_app():
             ("drop_rows", "impute"),
             format_func=lambda x: x.replace("_", " ").title()
         )
+
+        # NEW: Ask user about preprocessing
+        st.subheader("Data Preprocessing Options")
+        st.markdown("""
+        Do you want to apply **Standardization** (for numeric features) and **One-Hot Encoding** (for categorical features)?
+        - **Yes:** Scales numeric features and converts categorical features into a numerical format, which is generally recommended for distance-based clustering algorithms like KMeans and GMM.
+        - **No:** Uses features as-is after basic cleaning (missing value handling, and ensuring numeric columns are actual numbers). Categorical features will still be One-Hot Encoded if selected, as most algorithms require numeric input.
+        """)
+        apply_advanced_preprocessing = st.checkbox(
+            "Apply Advanced Preprocessing (Scaling and One-Hot Encoding)",
+            value=True, # Default to true as it's usually recommended
+            help="If unchecked, numeric features will not be scaled. Categorical features will still be One-Hot Encoded if selected, as clustering algorithms require numeric input."
+        )
+
 
         st.subheader("Train-Test Split")
         st.markdown("""
@@ -667,20 +704,21 @@ def main_app():
             st.stop()
 
         # Preprocess Data
-        st.header("3️⃣ Data Preprocessing")
+        st.header("3️⃣ Preprocessing Summary & Preview")
 
         with st.spinner("Preprocessing your data..."):
-            # Ensure df passed to preprocess_data only contains selected columns
-            df_for_preprocessing = df[selected_numeric + selected_categorical].copy()
-            # Convert identified numeric strings to actual numbers *before* preprocessing
-            for col in selected_numeric:
-                df_for_preprocessing[col] = pd.to_numeric(df_for_preprocessing[col], errors='coerce')
-            
-            scaled_df, df_profile = preprocess_data(df_for_preprocessing, selected_numeric, selected_categorical, missing_strategy)
+            # Pass apply_advanced_preprocessing to the function
+            df_for_clustering, df_profile = preprocess_data(
+                df[selected_numeric + selected_categorical], # Pass only selected columns for preprocessing
+                selected_numeric,
+                selected_categorical,
+                missing_strategy,
+                apply_advanced_preprocessing
+            )
 
         st.success("✅ Preprocessing complete!")
-        st.write("Here is a preview of your processed data (scaled and one-hot encoded where applicable):")
-        st.dataframe(scaled_df.head())
+        st.write("Here is a preview of your data, ready for clustering:")
+        st.dataframe(df_for_clustering.head())
 
         # Clustering Evaluation
         st.header("4️⃣ Clustering Evaluation")
@@ -690,10 +728,10 @@ def main_app():
     This helps you see which method separates your data best.
     """)
 
-        k_range = range(2, min(11, len(scaled_df) + 1)) # Ensure k does not exceed number of samples
+        k_range = range(2, min(11, len(df_for_clustering) + 1)) # Ensure k does not exceed number of samples
 
         with st.spinner("Evaluating clustering performance..."):
-            scores, additional_metrics = evaluate_models(scaled_df, k_range)
+            scores, additional_metrics = evaluate_models(df_for_clustering, k_range)
 
         # Plot metrics
         fig_metrics, axes_metrics = plt.subplots(3, 1, figsize=(10, 15))
@@ -822,11 +860,11 @@ def main_app():
             n_clusters = st.slider(
                 "Number of clusters (k)",
                 min_value=2,
-                max_value=min(10, len(scaled_df)),
+                max_value=min(10, len(df_for_clustering)),
                 value=default_n_clusters
             )
-            if len(scaled_df) < n_clusters:
-                st.warning(f"Number of clusters ({n_clusters}) exceeds the number of samples ({len(scaled_df)}). Adjust 'k'.")
+            if len(df_for_clustering) < n_clusters:
+                st.warning(f"Number of clusters ({n_clusters}) exceeds the number of samples ({len(df_for_clustering)}). Adjust 'k'.")
                 st.stop()
 
         else: # DBSCAN
@@ -858,35 +896,35 @@ def main_app():
                 try:
                     if chosen_algo == "KMeans":
                         model = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
-                        labels = model.fit_predict(scaled_df)
+                        labels = model.fit_predict(df_for_clustering)
                     elif chosen_algo == "Gaussian Mixture Model":
                         model = GaussianMixture(n_components=n_clusters, random_state=42)
-                        labels = model.fit_predict(scaled_df)
+                        labels = model.fit_predict(df_for_clustering)
                     elif chosen_algo == "Agglomerative Clustering":
                         model = AgglomerativeClustering(n_clusters=n_clusters)
-                        labels = model.fit_predict(scaled_df)
+                        labels = model.fit_predict(df_for_clustering)
                     elif chosen_algo == "DBSCAN":
                         model = DBSCAN(eps=eps, min_samples=min_samples)
-                        labels = model.fit_predict(scaled_df)
+                        labels = model.fit_predict(df_for_clustering)
                     
                     # Exclude DBSCAN noise points (-1) from metric calculation if they exist
                     if chosen_algo == "DBSCAN" and -1 in np.unique(labels):
                         # Filter out noise points for metric calculation
                         core_samples_mask = labels != -1
                         labels_filtered = labels[core_samples_mask]
-                        scaled_df_filtered = scaled_df[core_samples_mask]
+                        df_for_clustering_filtered = df_for_clustering[core_samples_mask] # Use df_for_clustering here
                         if len(np.unique(labels_filtered)) > 1:
-                            silhouette = silhouette_score(scaled_df_filtered, labels_filtered)
-                            davies_bouldin = davies_bouldin_score(scaled_df_filtered, labels_filtered)
-                            calinski_harabasz = calinski_harabasz_score(scaled_df_filtered, labels_filtered)
+                            silhouette = silhouette_score(df_for_clustering_filtered, labels_filtered)
+                            davies_bouldin = davies_bouldin_score(df_for_clustering_filtered, labels_filtered)
+                            calinski_harabasz = calinski_harabasz_score(df_for_clustering_filtered, labels_filtered)
                         elif len(np.unique(labels_filtered)) == 1:
                              st.warning(f"Only 1 cluster formed after excluding noise points. Metrics will be N/A.")
                         else: # No clusters formed after excluding noise
                             st.warning(f"No clusters formed after excluding noise points. Metrics will be N/A.")
                     elif labels is not None and len(np.unique(labels)) > 1:
-                        silhouette = silhouette_score(scaled_df, labels)
-                        davies_bouldin = davies_bouldin_score(scaled_df, labels)
-                        calinski_harabasz = calinski_harabasz_score(scaled_df, labels)
+                        silhouette = silhouette_score(df_for_clustering, labels)
+                        davies_bouldin = davies_bouldin_score(df_for_clustering, labels)
+                        calinski_harabasz = calinski_harabasz_score(df_for_clustering, labels)
                     elif labels is not None:
                         st.warning(f"Only {len(np.unique(labels))} cluster(s) formed. Metrics will be N/A.")
 
